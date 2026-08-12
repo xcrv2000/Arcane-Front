@@ -9,9 +9,10 @@ const MAP_WIDTH: float = 56.0
 const MAP_HEIGHT: float = 100.0
 const MANA_MAX: float = 10.0
 const STARTING_MANA: float = 5.0
-const MANA_PER_SECOND: float = 1.0
+const MANA_PER_SECOND: float = 0.5
 const BASE_MAX_HP: float = 300.0
 const BASE_RADIUS: float = 4.8
+const UNIT_RADIUS_SCALE: float = 2.0
 const RIVER_Y: float = 50.0
 const PLAYER_DEPLOY_MIN_Y: float = 54.0
 const BOT_DEPLOY_MAX_Y: float = 46.0
@@ -48,6 +49,7 @@ var units: Array[Dictionary] = []
 var spell_effects: Array[Dictionary] = []
 var bases: Dictionary = {}
 var stats: Dictionary = {}
+var task_states: Dictionary = {}
 var event_log: Array[String] = []
 var match_winner: String = ""
 var rng: RandomNumberGenerator = RandomNumberGenerator.new()
@@ -69,6 +71,8 @@ func _process(delta: float) -> void:
 	battle_time += delta
 	player_mana = min(MANA_MAX, player_mana + MANA_PER_SECOND * delta)
 	bot_mana = min(MANA_MAX, bot_mana + MANA_PER_SECOND * delta)
+	_check_mana_tasks(PLAYER)
+	_check_mana_tasks(BOT)
 	_update_bot(delta)
 	_update_units(delta)
 	_update_spell_effects(delta)
@@ -113,7 +117,7 @@ func _handle_battle_press(position: Vector2) -> void:
 		var card_id: String = String(raw_card_id)
 		if battle_card_rects[card_id].has_point(position):
 			selected_battle_card_id = card_id
-			var card: Dictionary = _card_by_id(card_id)
+			var card: Dictionary = _active_card_by_id(PLAYER, card_id)
 			if player_mana < float(card["cost"]):
 				_push_event("%s 费用不足。" % card["name"])
 			queue_redraw()
@@ -121,7 +125,7 @@ func _handle_battle_press(position: Vector2) -> void:
 
 	if board_rect.has_point(position) and selected_battle_card_id != "":
 		var logic_position: Vector2 = _screen_to_map(position)
-		var card: Dictionary = _card_by_id(selected_battle_card_id)
+		var card: Dictionary = _active_card_by_id(PLAYER, selected_battle_card_id)
 		_try_play_card(PLAYER, card, logic_position)
 		queue_redraw()
 
@@ -131,7 +135,7 @@ func _toggle_card_selection(card_id: String) -> void:
 	elif selected_card_ids.size() < CARD_PICK_COUNT:
 		selected_card_ids.append(card_id)
 	else:
-		_push_event("V0.1 单局只能携带 6 张卡。")
+		_push_event("V0.2 单局仍只能携带 6 张卡。")
 
 func _start_battle() -> void:
 	screen_mode = ScreenMode.BATTLE
@@ -166,9 +170,14 @@ func _start_battle() -> void:
 		"player_spent": 0.0,
 		"bot_spent": 0.0,
 		"units_lost": 0,
-		"spell_casts": 0
+		"spell_casts": 0,
+		"player_tasks_completed": 0,
+		"bot_tasks_completed": 0,
+		"player_evolutions": 0,
+		"bot_evolutions": 0
 	}
-	_push_event("V0.1 对局开始：摧毁基地才会结束。")
+	_initialize_task_states()
+	_push_event("V0.2 对局开始：任务完成后卡牌自动进化。")
 	queue_redraw()
 
 func _update_bot(delta: float) -> void:
@@ -181,7 +190,7 @@ func _update_bot(delta: float) -> void:
 		var card_id: String = BOT_DECK_IDS[bot_play_cursor % BOT_DECK_IDS.size()]
 		bot_play_cursor += 1
 		attempts += 1
-		var card: Dictionary = _card_by_id(card_id)
+		var card: Dictionary = _active_card_by_id(BOT, card_id)
 		if card.size() > 0 and bot_mana >= float(card["cost"]):
 			var target_position: Vector2 = _choose_bot_position(card)
 			_try_play_card(BOT, card, target_position)
@@ -257,7 +266,7 @@ func _try_play_card(side: String, card: Dictionary, target_position: Vector2) ->
 func _spawn_units(side: String, card: Dictionary, target_position: Vector2) -> void:
 	var count: int = int(card["count"])
 	var center: Vector2 = _clamped_deploy_position(side, target_position)
-	var spread: float = 1.9
+	var spread: float = 1.9 * UNIT_RADIUS_SCALE
 	for index in range(count):
 		var angle: float = TAU * float(index) / max(1.0, float(count))
 		var offset: Vector2 = Vector2(cos(angle), sin(angle)) * spread
@@ -277,8 +286,13 @@ func _spawn_units(side: String, card: Dictionary, target_position: Vector2) -> v
 			"attack_timer": rng.randf_range(0.0, 0.35),
 			"range": float(card["range"]),
 			"speed": float(card["speed"]),
-			"radius": float(card["radius"]),
+			"radius": float(card["radius"]) * UNIT_RADIUS_SCALE,
 			"aoe_radius": float(card.get("aoe_radius", 0.0)),
+			"multi_target_count": int(card.get("multi_target_count", 1)),
+			"aura_interval": float(card.get("aura_interval", 0.0)),
+			"aura_timer": float(card.get("aura_interval", 0.0)),
+			"aura_radius": float(card.get("aura_radius", 0.0)),
+			"aura_damage": float(card.get("aura_damage", 0.0)),
 			"shape": card["shape"],
 			"color": card["color"],
 			"target_base_only": bool(card.get("target_base_only", false)),
@@ -289,6 +303,10 @@ func _spawn_units(side: String, card: Dictionary, target_position: Vector2) -> v
 	_push_event("%s 部署 %s。" % [_side_name(side), card["name"]])
 
 func _cast_spell(side: String, card: Dictionary, target_position: Vector2) -> void:
+	if card["spell_mode"] == "line":
+		_cast_line_spell(side, card, target_position)
+		return
+
 	var enemy_side: String = _opponent(side)
 	var radius: float = float(card["radius"])
 	var damage: float = float(card["damage"])
@@ -298,18 +316,18 @@ func _cast_spell(side: String, card: Dictionary, target_position: Vector2) -> vo
 	if card["spell_mode"] == "single":
 		var target: Dictionary = _nearest_enemy_unit(enemy_side, target_position, radius)
 		if target.size() > 0:
-			_damage_unit(target, damage)
+			_damage_unit(target, damage, side, String(card["id"]), 0)
 			hit_count = 1
 		elif target_position.distance_to(_base_position(enemy_side)) <= radius + BASE_RADIUS:
-			_damage_base(enemy_side, base_damage, side)
+			_damage_base(enemy_side, base_damage, side, String(card["id"]))
 			hit_count = 1
 	else:
 		for unit in units:
 			if unit["side"] == enemy_side and unit["hp"] > 0.0 and unit["pos"].distance_to(target_position) <= radius:
-				_damage_unit(unit, damage)
+				_damage_unit(unit, damage, side, String(card["id"]), 0)
 				hit_count += 1
 		if target_position.distance_to(_base_position(enemy_side)) <= radius + BASE_RADIUS:
-			_damage_base(enemy_side, base_damage, side)
+			_damage_base(enemy_side, base_damage, side, String(card["id"]))
 			hit_count += 1
 
 	stats["spell_casts"] += 1
@@ -328,6 +346,7 @@ func _update_units(delta: float) -> void:
 		if unit["hp"] <= 0.0:
 			continue
 		unit["attack_timer"] = max(0.0, float(unit["attack_timer"]) - delta)
+		_update_unit_aura(unit, delta)
 
 	for unit in units:
 		if unit["hp"] <= 0.0 or screen_mode != ScreenMode.BATTLE:
@@ -391,17 +410,48 @@ func _find_target(unit: Dictionary) -> Dictionary:
 
 func _perform_attack(unit: Dictionary, target: Dictionary) -> void:
 	var damage: float = float(unit["damage"])
+	var source_card_id: String = String(unit["card_id"])
+	var source_unit_id: int = int(unit["id"])
 	if target["kind"] == "base":
-		_damage_base(target["side"], damage, unit["side"])
+		_damage_base(target["side"], damage, unit["side"], source_card_id)
+		var excluded_unit_ids: Array[int] = []
+		_damage_extra_attack_targets(unit, excluded_unit_ids, max(0, int(unit.get("multi_target_count", 1)) - 1), damage)
 		return
 
+	var hit_unit_ids: Array[int] = []
 	if float(unit.get("aoe_radius", 0.0)) > 0.0:
-		var center: Vector2 = target["unit"]["pos"]
-		for enemy in units:
-			if enemy["side"] != unit["side"] and enemy["hp"] > 0.0 and enemy["pos"].distance_to(center) <= float(unit["aoe_radius"]):
-				_damage_unit(enemy, damage)
+		hit_unit_ids = _damage_attack_aoe(unit, target["unit"]["pos"], damage)
 	else:
-		_damage_unit(target["unit"], damage)
+		hit_unit_ids.append(int(target["unit"]["id"]))
+		_damage_unit(target["unit"], damage, unit["side"], source_card_id, source_unit_id)
+
+	_damage_extra_attack_targets(unit, hit_unit_ids, max(0, int(unit.get("multi_target_count", 1)) - 1), damage)
+
+func _damage_attack_aoe(unit: Dictionary, center: Vector2, damage: float) -> Array[int]:
+	var hit_unit_ids: Array[int] = []
+	for enemy in units:
+		if enemy["side"] != unit["side"] and enemy["hp"] > 0.0 and enemy["pos"].distance_to(center) <= float(unit["aoe_radius"]):
+			hit_unit_ids.append(int(enemy["id"]))
+			_damage_unit(enemy, damage, unit["side"], String(unit["card_id"]), int(unit["id"]))
+	return hit_unit_ids
+
+func _damage_extra_attack_targets(unit: Dictionary, excluded_unit_ids: Array[int], count: int, damage: float) -> void:
+	var remaining: int = count
+	while remaining > 0:
+		var best_unit: Dictionary = {}
+		var best_distance: float = INF
+		for enemy in units:
+			if enemy["side"] == unit["side"] or enemy["hp"] <= 0.0 or excluded_unit_ids.has(int(enemy["id"])):
+				continue
+			var distance: float = unit["pos"].distance_to(enemy["pos"])
+			if distance <= float(unit["range"]) + float(enemy["radius"]) and distance < best_distance:
+				best_distance = distance
+				best_unit = enemy
+		if best_unit.size() == 0:
+			return
+		excluded_unit_ids.append(int(best_unit["id"]))
+		_damage_unit(best_unit, damage, unit["side"], String(unit["card_id"]), int(unit["id"]))
+		remaining -= 1
 
 func _move_unit_toward(unit: Dictionary, target_position: Vector2, delta: float) -> void:
 	var direction: Vector2 = target_position - unit["pos"]
@@ -435,21 +485,31 @@ func _path_goal_toward_base(unit: Dictionary) -> Vector2:
 func _target_is_base_position(side: String, target_position: Vector2) -> bool:
 	return target_position.distance_to(_base_position(_opponent(side))) <= 0.1
 
-func _damage_unit(unit: Dictionary, amount: float) -> void:
-	unit["hp"] = max(0.0, float(unit["hp"]) - amount)
+func _damage_unit(unit: Dictionary, amount: float, source_side: String = "", source_card_id: String = "", source_unit_id: int = 0) -> void:
+	var previous_hp: float = float(unit["hp"])
+	if previous_hp <= 0.0:
+		return
+	unit["hp"] = max(0.0, previous_hp - amount)
+	_track_unit_hp_change(unit)
+	if float(unit["hp"]) <= 0.0 and source_side != "" and source_side != String(unit["side"]):
+		_track_unit_kill(source_side, source_card_id, source_unit_id)
 
-func _damage_base(base_side: String, amount: float, source_side: String) -> void:
+func _damage_base(base_side: String, amount: float, source_side: String, source_card_id: String = "") -> void:
 	if screen_mode != ScreenMode.BATTLE:
 		return
 
 	var base: Dictionary = bases[base_side]
+	var previous_hp: float = float(base["hp"])
 	base["hp"] = max(0.0, float(base["hp"]) - amount)
+	if previous_hp > float(base["hp"]) and source_side != "" and source_side != base_side:
+		_track_base_hit(source_side, source_card_id)
 	while float(base["next_clear_threshold"]) > 0.0 and float(base["hp"]) <= float(base["next_clear_threshold"]):
 		_trigger_clear(base_side, float(base["next_clear_threshold"]))
 		base["next_clear_threshold"] = float(base["next_clear_threshold"]) - 100.0
 
 	if float(base["hp"]) <= 0.0:
-		_finish_match(source_side)
+		var winner_side: String = source_side if source_side != base_side else _opponent(base_side)
+		_finish_match(winner_side)
 
 func _trigger_clear(base_side: String, threshold: float) -> void:
 	for unit in units:
@@ -475,6 +535,283 @@ func _record_card_use(side: String, card_id: String) -> void:
 	var key: String = "player_cards" if side == PLAYER else "bot_cards"
 	var usage: Dictionary = stats[key]
 	usage[card_id] = int(usage.get(card_id, 0)) + 1
+	_track_card_play(side, card_id)
+
+func _initialize_task_states() -> void:
+	task_states = {
+		PLAYER: {},
+		BOT: {}
+	}
+	for card_id in selected_card_ids:
+		_add_task_state(PLAYER, card_id)
+	for card_id in BOT_DECK_IDS:
+		_add_task_state(BOT, card_id)
+
+func _add_task_state(side: String, card_id: String) -> void:
+	var card: Dictionary = _card_by_id(card_id)
+	if card.size() == 0 or not card.has("task"):
+		return
+	var side_tasks: Dictionary = task_states[side]
+	side_tasks[card_id] = {
+		"progress": 0.0,
+		"completed": false,
+		"evolved": false,
+		"recent_uses": [],
+		"unit_kills": {}
+	}
+
+func _active_card_by_id(side: String, card_id: String) -> Dictionary:
+	var base_card: Dictionary = _card_by_id(card_id)
+	if base_card.size() == 0:
+		return {}
+	var active_card: Dictionary = base_card.duplicate(true)
+	active_card["id"] = card_id
+	active_card["base_name"] = base_card["name"]
+	active_card["evolved"] = false
+	if not _is_card_evolved(side, card_id):
+		return active_card
+
+	var evolution: Dictionary = base_card.get("evolution", {})
+	active_card["evolved"] = true
+	active_card["evolved_id"] = String(evolution.get("id", card_id))
+	active_card["name"] = String(evolution.get("name", base_card["name"]))
+	active_card["short_name"] = String(evolution.get("short_name", base_card["short_name"]))
+	var overrides: Dictionary = evolution.get("overrides", {})
+	for raw_key in overrides.keys():
+		active_card[raw_key] = overrides[raw_key]
+	return active_card
+
+func _is_card_evolved(side: String, card_id: String) -> bool:
+	if not task_states.has(side):
+		return false
+	var side_tasks: Dictionary = task_states[side]
+	if not side_tasks.has(card_id):
+		return false
+	return bool(side_tasks[card_id].get("evolved", false))
+
+func _task_progress_text(side: String, card_id: String) -> String:
+	if _is_card_evolved(side, card_id):
+		return "已进化"
+	var state: Dictionary = _task_state(side, card_id)
+	var card: Dictionary = _card_by_id(card_id)
+	if state.size() == 0 or card.size() == 0 or not card.has("task"):
+		return "无任务"
+	var task: Dictionary = card["task"]
+	var target_text: String = String(task.get("target_text", str(int(task.get("target", 1)))))
+	var progress: float = float(state.get("progress", 0.0))
+	if String(task.get("type", "")) == "mana_reached":
+		return "%s %.1f/%s" % [String(task.get("progress_label", "进度")), progress, target_text]
+	return "%s %d/%s" % [String(task.get("progress_label", "进度")), int(floor(progress)), target_text]
+
+func _task_state(side: String, card_id: String) -> Dictionary:
+	if not task_states.has(side):
+		return {}
+	var side_tasks: Dictionary = task_states[side]
+	if not side_tasks.has(card_id):
+		return {}
+	return side_tasks[card_id]
+
+func _check_mana_tasks(side: String) -> void:
+	if not task_states.has(side):
+		return
+	var current_mana: float = player_mana if side == PLAYER else bot_mana
+	var side_tasks: Dictionary = task_states[side]
+	for raw_card_id in side_tasks.keys():
+		var card_id: String = String(raw_card_id)
+		var state: Dictionary = side_tasks[card_id]
+		if bool(state.get("completed", false)):
+			continue
+		var task: Dictionary = _card_by_id(card_id).get("task", {})
+		if String(task.get("type", "")) != "mana_reached":
+			continue
+		state["progress"] = current_mana
+		side_tasks[card_id] = state
+		if current_mana >= float(task.get("target", 1.0)):
+			_complete_task(side, card_id)
+
+func _track_card_play(side: String, played_card_id: String) -> void:
+	if not task_states.has(side):
+		return
+	var side_tasks: Dictionary = task_states[side]
+	for raw_card_id in side_tasks.keys():
+		var card_id: String = String(raw_card_id)
+		var state: Dictionary = side_tasks[card_id]
+		if bool(state.get("completed", false)):
+			continue
+		var task: Dictionary = _card_by_id(card_id).get("task", {})
+		var task_type: String = String(task.get("type", ""))
+		var watch_card_id: String = String(task.get("watch_card_id", card_id))
+		if played_card_id != watch_card_id:
+			continue
+		if task_type == "card_play_count" or task_type == "linked_card_play_count":
+			_increment_task_progress(side, card_id, 1.0)
+		elif task_type == "card_play_burst":
+			_track_burst_card_play(side, card_id, state, task)
+
+func _track_burst_card_play(side: String, card_id: String, state: Dictionary, task: Dictionary) -> void:
+	var recent_uses: Array = state.get("recent_uses", [])
+	recent_uses.append(battle_time)
+	var window: float = float(task.get("window", 3.0))
+	var filtered_uses: Array = []
+	for raw_time in recent_uses:
+		var use_time: float = float(raw_time)
+		if battle_time - use_time <= window:
+			filtered_uses.append(use_time)
+	state["recent_uses"] = filtered_uses
+	state["progress"] = float(filtered_uses.size())
+	var side_tasks: Dictionary = task_states[side]
+	side_tasks[card_id] = state
+	if filtered_uses.size() >= int(task.get("target", 1)):
+		_complete_task(side, card_id)
+
+func _track_unit_hp_change(unit: Dictionary) -> void:
+	var side: String = String(unit["side"])
+	var card_id: String = String(unit["card_id"])
+	var state: Dictionary = _task_state(side, card_id)
+	var card: Dictionary = _card_by_id(card_id)
+	if state.size() == 0 or card.size() == 0 or bool(state.get("completed", false)):
+		return
+	var task: Dictionary = card.get("task", {})
+	if String(task.get("type", "")) != "unit_hp_below_ratio":
+		return
+	if float(unit["hp"]) < float(unit["max_hp"]) * float(task.get("hp_ratio", 0.6667)):
+		_set_task_progress(side, card_id, 1.0)
+
+func _track_unit_kill(source_side: String, source_card_id: String, source_unit_id: int) -> void:
+	if source_card_id == "" or not task_states.has(source_side):
+		return
+	var side_tasks: Dictionary = task_states[source_side]
+	for raw_card_id in side_tasks.keys():
+		var card_id: String = String(raw_card_id)
+		var state: Dictionary = side_tasks[card_id]
+		if bool(state.get("completed", false)):
+			continue
+		var task: Dictionary = _card_by_id(card_id).get("task", {})
+		var task_type: String = String(task.get("type", ""))
+		if source_card_id != String(task.get("watch_card_id", card_id)):
+			continue
+		if task_type == "card_kill_count":
+			_increment_task_progress(source_side, card_id, 1.0)
+		elif task_type == "single_unit_kill_count" and source_unit_id > 0:
+			var unit_kills: Dictionary = state.get("unit_kills", {})
+			unit_kills[source_unit_id] = int(unit_kills.get(source_unit_id, 0)) + 1
+			state["unit_kills"] = unit_kills
+			state["progress"] = max(float(state.get("progress", 0.0)), float(unit_kills[source_unit_id]))
+			side_tasks[card_id] = state
+			if int(unit_kills[source_unit_id]) >= int(task.get("target", 1)):
+				_complete_task(source_side, card_id)
+
+func _track_base_hit(source_side: String, source_card_id: String) -> void:
+	if source_card_id == "" or not task_states.has(source_side):
+		return
+	var side_tasks: Dictionary = task_states[source_side]
+	for raw_card_id in side_tasks.keys():
+		var card_id: String = String(raw_card_id)
+		var state: Dictionary = side_tasks[card_id]
+		if bool(state.get("completed", false)):
+			continue
+		var task: Dictionary = _card_by_id(card_id).get("task", {})
+		if String(task.get("type", "")) == "base_hit_count" and source_card_id == String(task.get("watch_card_id", card_id)):
+			_increment_task_progress(source_side, card_id, 1.0)
+
+func _increment_task_progress(side: String, card_id: String, amount: float) -> void:
+	var state: Dictionary = _task_state(side, card_id)
+	if state.size() == 0:
+		return
+	_set_task_progress(side, card_id, float(state.get("progress", 0.0)) + amount)
+
+func _set_task_progress(side: String, card_id: String, value: float) -> void:
+	var side_tasks: Dictionary = task_states[side]
+	var state: Dictionary = side_tasks[card_id]
+	if bool(state.get("completed", false)):
+		return
+	var task: Dictionary = _card_by_id(card_id).get("task", {})
+	var target: float = float(task.get("target", 1.0))
+	state["progress"] = min(value, target)
+	side_tasks[card_id] = state
+	if value >= target:
+		_complete_task(side, card_id)
+
+func _complete_task(side: String, card_id: String) -> void:
+	var side_tasks: Dictionary = task_states[side]
+	var state: Dictionary = side_tasks[card_id]
+	if bool(state.get("completed", false)):
+		return
+	var card: Dictionary = _card_by_id(card_id)
+	var task: Dictionary = card.get("task", {})
+	var evolution: Dictionary = card.get("evolution", {})
+	state["completed"] = true
+	state["evolved"] = evolution.size() > 0
+	state["progress"] = float(task.get("target", state.get("progress", 0.0)))
+	side_tasks[card_id] = state
+	var task_key: String = "player_tasks_completed" if side == PLAYER else "bot_tasks_completed"
+	var evolution_key: String = "player_evolutions" if side == PLAYER else "bot_evolutions"
+	stats[task_key] = int(stats.get(task_key, 0)) + 1
+	if evolution.size() > 0:
+		stats[evolution_key] = int(stats.get(evolution_key, 0)) + 1
+		_push_event("%s完成%s任务，进化为%s。" % [_side_name(side), card["name"], evolution["name"]])
+	else:
+		_push_event("%s完成%s任务。" % [_side_name(side), card["name"]])
+
+func _update_unit_aura(unit: Dictionary, delta: float) -> void:
+	var interval: float = float(unit.get("aura_interval", 0.0))
+	if interval <= 0.0 or screen_mode != ScreenMode.BATTLE:
+		return
+	var timer: float = float(unit.get("aura_timer", interval)) - delta
+	while timer <= 0.0 and screen_mode == ScreenMode.BATTLE and float(unit["hp"]) > 0.0:
+		_pulse_unit_aura(unit)
+		timer += interval
+	unit["aura_timer"] = timer
+
+func _pulse_unit_aura(unit: Dictionary) -> void:
+	var enemy_side: String = _opponent(unit["side"])
+	var radius: float = float(unit["aura_radius"])
+	var damage: float = float(unit["aura_damage"])
+	var hit_count: int = 0
+	for enemy in units:
+		if enemy["side"] == enemy_side and enemy["hp"] > 0.0 and enemy["pos"].distance_to(unit["pos"]) <= radius:
+			_damage_unit(enemy, damage, unit["side"], String(unit["card_id"]), int(unit["id"]))
+			hit_count += 1
+	if unit["pos"].distance_to(_base_position(enemy_side)) <= radius + BASE_RADIUS:
+		_damage_base(enemy_side, damage, unit["side"], String(unit["card_id"]))
+		hit_count += 1
+	if hit_count > 0:
+		spell_effects.append({
+			"pos": unit["pos"],
+			"radius": radius,
+			"time": 0.22,
+			"max_time": 0.22,
+			"color": unit["color"],
+			"label": unit["short_name"]
+		})
+
+func _cast_line_spell(side: String, card: Dictionary, target_position: Vector2) -> void:
+	var start_position: Vector2 = _base_position(side)
+	var radius: float = float(card["radius"])
+	var damage: float = float(card["damage"])
+	var base_damage: float = float(card["base_damage"])
+	var hit_count: int = 0
+	for unit in units:
+		if unit["hp"] > 0.0 and _distance_to_segment(unit["pos"], start_position, target_position) <= radius:
+			_damage_unit(unit, damage, side, String(card["id"]), 0)
+			hit_count += 1
+	for raw_base_side in [PLAYER, BOT]:
+		var base_side: String = String(raw_base_side)
+		if _distance_to_segment(_base_position(base_side), start_position, target_position) <= radius + BASE_RADIUS:
+			_damage_base(base_side, base_damage, side, String(card["id"]))
+			hit_count += 1
+	stats["spell_casts"] += 1
+	spell_effects.append({
+		"mode": "line",
+		"from": start_position,
+		"pos": target_position,
+		"radius": radius,
+		"time": 0.36,
+		"max_time": 0.36,
+		"color": card["color"],
+		"label": card["short_name"]
+	})
+	_push_event("%s 施放 %s，路径命中 %d。" % [_side_name(side), card["name"], hit_count])
 
 func _push_event(message: String) -> void:
 	event_log.append(message)
@@ -495,8 +832,8 @@ func _draw_deck_select() -> void:
 	card_pick_rects.clear()
 	var margin: float = max(18.0, size.x * 0.04)
 	var title_y: float = 30.0
-	_draw_text_line("奥术前线 V0.1", Rect2(margin, title_y, size.x - margin * 2.0, 34.0), 24, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
-	_draw_text_line("8 选 6；进入对局后 6 张卡常驻可用。", Rect2(margin, title_y + 42.0, size.x - margin * 2.0, 24.0), 16, Color(0.68, 0.73, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_text_line("奥术前线 V0.2", Rect2(margin, title_y, size.x - margin * 2.0, 34.0), 24, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_text_line("8 选 6；局内任务完成后自动进化。", Rect2(margin, title_y + 42.0, size.x - margin * 2.0, 24.0), 16, Color(0.68, 0.73, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
 
 	var grid_top: float = title_y + 82.0
 	var gap: float = 10.0
@@ -518,7 +855,7 @@ func _draw_deck_select() -> void:
 
 	var info_rect: Rect2 = Rect2(margin, size.y - 116.0, size.x - margin * 2.0, 22.0)
 	_draw_text_line("已选 %d/%d" % [selected_card_ids.size(), CARD_PICK_COUNT], info_rect, 18, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_CENTER)
-	var hint: String = "点选卡牌切换配置；trial 数值用于先跑通节奏。"
+	var hint: String = "点选卡牌切换配置；进化只影响后续使用。"
 	if event_log.size() > 0:
 		hint = event_log[event_log.size() - 1]
 	_draw_text_line(hint, Rect2(margin, size.y - 94.0, size.x - margin * 2.0, 18.0), 13, Color(0.62, 0.68, 0.76), HORIZONTAL_ALIGNMENT_CENTER)
@@ -542,7 +879,8 @@ func _draw_pick_card(card: Dictionary, rect: Rect2, selected: bool) -> void:
 
 	var note: String = "trial：" + String(card["trial_note"])
 	_draw_two_line_text(note, Rect2(rect.position + Vector2(10.0, 62.0), Vector2(rect.size.x - 20.0, 38.0)), 13, Color(0.70, 0.76, 0.82))
-	_draw_text_line("任务/进化预留", Rect2(rect.position + Vector2(10.0, rect.size.y - 24.0), Vector2(rect.size.x - 20.0, 18.0)), 12, Color(0.86, 0.72, 0.42), HORIZONTAL_ALIGNMENT_RIGHT)
+	var evolution: Dictionary = card.get("evolution", {})
+	_draw_text_line("进化：%s" % String(evolution.get("name", "未设置")), Rect2(rect.position + Vector2(10.0, rect.size.y - 24.0), Vector2(rect.size.x - 20.0, 18.0)), 12, Color(0.86, 0.72, 0.42), HORIZONTAL_ALIGNMENT_RIGHT)
 
 	if selected:
 		draw_circle(rect.position + Vector2(rect.size.x - 18.0, 18.0), 10.0, Color(0.35, 0.78, 0.95))
@@ -621,6 +959,17 @@ func _draw_clock() -> void:
 func _draw_spell_effect(effect: Dictionary) -> void:
 	var alpha: float = clamp(float(effect["time"]) / float(effect["max_time"]), 0.0, 1.0)
 	var color: Color = effect["color"]
+	if String(effect.get("mode", "circle")) == "line":
+		var start: Vector2 = _map_to_screen(effect["from"])
+		var end: Vector2 = _map_to_screen(effect["pos"])
+		var width: float = max(2.0, _logic_to_pixels(float(effect["radius"]) * 2.0))
+		color.a = 0.16 * alpha
+		draw_line(start, end, color, width, true)
+		color.a = 0.82 * alpha
+		draw_line(start, end, color, max(2.0, width * 0.18), true)
+		draw_circle(end, max(5.0, width * 0.16), color)
+		_draw_text_line(effect["label"], Rect2(end - Vector2(24.0, 12.0), Vector2(48.0, 24.0)), 16, Color(1.0, 0.96, 0.78, alpha), HORIZONTAL_ALIGNMENT_CENTER)
+		return
 	color.a = 0.22 * alpha
 	var center: Vector2 = _map_to_screen(effect["pos"])
 	var radius: float = _logic_to_pixels(float(effect["radius"]))
@@ -669,7 +1018,7 @@ func _draw_battle_card_bar() -> void:
 	var bar_top: float = size.y - 162.0
 	var bar_rect: Rect2 = Rect2(margin, bar_top, size.x - margin * 2.0, 148.0)
 	_draw_panel(bar_rect, Color(0.10, 0.12, 0.15), 8.0, Color(0.22, 0.25, 0.29), 1.0)
-	_draw_text_line("常驻卡组  任务/进化位：V0.1 预留", Rect2(bar_rect.position + Vector2(10.0, 8.0), Vector2(bar_rect.size.x - 20.0, 18.0)), 14, Color(0.75, 0.80, 0.86), HORIZONTAL_ALIGNMENT_LEFT)
+	_draw_text_line("常驻卡组  任务 %d/%d  进化 %d" % [int(stats.get("player_tasks_completed", 0)), selected_card_ids.size(), int(stats.get("player_evolutions", 0))], Rect2(bar_rect.position + Vector2(10.0, 8.0), Vector2(bar_rect.size.x - 20.0, 18.0)), 14, Color(0.75, 0.80, 0.86), HORIZONTAL_ALIGNMENT_LEFT)
 	_draw_mana_bar(Rect2(bar_rect.position + Vector2(10.0, 32.0), Vector2(bar_rect.size.x - 20.0, 10.0)))
 
 	var gap: float = 6.0
@@ -678,10 +1027,11 @@ func _draw_battle_card_bar() -> void:
 	var y: float = bar_rect.position.y + 50.0
 	for index in range(selected_card_ids.size()):
 		var card_id: String = selected_card_ids[index]
-		var card: Dictionary = _card_by_id(card_id)
+		var base_card: Dictionary = _card_by_id(card_id)
+		var card: Dictionary = _active_card_by_id(PLAYER, card_id)
 		var rect: Rect2 = Rect2(bar_rect.position.x + 10.0 + index * (card_width + gap), y, card_width, card_height)
 		battle_card_rects[card_id] = rect
-		_draw_battle_card(card, rect, selected_battle_card_id == card_id)
+		_draw_battle_card(base_card, card, rect, selected_battle_card_id == card_id)
 
 func _draw_mana_bar(rect: Rect2) -> void:
 	draw_rect(rect, Color(0.05, 0.06, 0.08))
@@ -690,7 +1040,7 @@ func _draw_mana_bar(rect: Rect2) -> void:
 		var x: float = rect.position.x + rect.size.x * float(tick) / MANA_MAX
 		draw_line(Vector2(x, rect.position.y), Vector2(x, rect.end.y), Color(0.95, 0.96, 1.0, 0.18), 1.0)
 
-func _draw_battle_card(card: Dictionary, rect: Rect2, selected: bool) -> void:
+func _draw_battle_card(base_card: Dictionary, card: Dictionary, rect: Rect2, selected: bool) -> void:
 	var affordable: bool = player_mana >= float(card["cost"])
 	var bg: Color = Color(0.14, 0.17, 0.21) if affordable else Color(0.09, 0.10, 0.12)
 	if selected:
@@ -699,7 +1049,8 @@ func _draw_battle_card(card: Dictionary, rect: Rect2, selected: bool) -> void:
 	var icon_center: Vector2 = rect.position + Vector2(rect.size.x * 0.5, 24.0)
 	_draw_unit_shape(card, icon_center, 12.0, card["color"] if affordable else Color(0.30, 0.32, 0.34), Color(0.04, 0.05, 0.07), String(card["short_name"]), 16)
 	_draw_text_line(card["name"], Rect2(rect.position + Vector2(3.0, 42.0), Vector2(rect.size.x - 6.0, 18.0)), 12, Color(0.92, 0.94, 0.96) if affordable else Color(0.46, 0.49, 0.54), HORIZONTAL_ALIGNMENT_CENTER)
-	_draw_text_line("%d费" % int(card["cost"]), Rect2(rect.position + Vector2(3.0, 62.0), Vector2(rect.size.x - 6.0, 17.0)), 13, Color(0.70, 0.84, 1.0) if affordable else Color(0.42, 0.46, 0.52), HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_text_line("%d费" % int(card["cost"]), Rect2(rect.position + Vector2(3.0, 60.0), Vector2(rect.size.x - 6.0, 15.0)), 12, Color(0.70, 0.84, 1.0) if affordable else Color(0.42, 0.46, 0.52), HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_text_line(_task_progress_text(PLAYER, String(base_card["id"])), Rect2(rect.position + Vector2(3.0, 74.0), Vector2(rect.size.x - 6.0, 13.0)), 10, Color(0.90, 0.76, 0.46) if not bool(card.get("evolved", false)) else Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_CENTER)
 
 func _draw_event_log() -> void:
 	var log_rect: Rect2 = Rect2(14.0, board_rect.end.y + 8.0, size.x - 28.0, max(0.0, size.y - board_rect.end.y - 180.0))
@@ -722,6 +1073,7 @@ func _draw_result_overlay() -> void:
 	_draw_text_line("用时 %s；单位阵亡 %d；法术施放 %d" % [_format_time(battle_time), int(stats["units_lost"]), int(stats["spell_casts"])], Rect2(panel.position + Vector2(18.0, 62.0), Vector2(panel.size.x - 36.0, 22.0)), 15, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 	_draw_text_line("清屏次数 我方 %d / Bot %d" % [int(bases[PLAYER]["clear_count"]), int(bases[BOT]["clear_count"])], Rect2(panel.position + Vector2(18.0, 92.0), Vector2(panel.size.x - 36.0, 22.0)), 15, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 	_draw_text_line("耗费 我方 %.0f / Bot %.0f" % [float(stats["player_spent"]), float(stats["bot_spent"])], Rect2(panel.position + Vector2(18.0, 120.0), Vector2(panel.size.x - 36.0, 22.0)), 15, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_text_line("任务 我方 %d / Bot %d；进化 我方 %d / Bot %d" % [int(stats.get("player_tasks_completed", 0)), int(stats.get("bot_tasks_completed", 0)), int(stats.get("player_evolutions", 0)), int(stats.get("bot_evolutions", 0))], Rect2(panel.position + Vector2(18.0, 148.0), Vector2(panel.size.x - 36.0, 22.0)), 15, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 
 	restart_rect = Rect2(panel.position + Vector2(24.0, panel.size.y - 78.0), Vector2((panel.size.x - 58.0) * 0.5, 48.0))
 	deck_rect = Rect2(Vector2(restart_rect.end.x + 10.0, restart_rect.position.y), restart_rect.size)
@@ -797,6 +1149,14 @@ func _nearest_enemy_unit(enemy_side: String, position: Vector2, radius: float) -
 				best_distance = distance
 				best_unit = unit
 	return best_unit
+
+func _distance_to_segment(point: Vector2, segment_start: Vector2, segment_end: Vector2) -> float:
+	var segment: Vector2 = segment_end - segment_start
+	var length_squared: float = segment.length_squared()
+	if length_squared <= 0.0001:
+		return point.distance_to(segment_start)
+	var t: float = clamp((point - segment_start).dot(segment) / length_squared, 0.0, 1.0)
+	return point.distance_to(segment_start + segment * t)
 
 func _card_by_id(card_id: String) -> Dictionary:
 	for card in cards:

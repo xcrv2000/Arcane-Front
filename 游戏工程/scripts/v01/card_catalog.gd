@@ -19,8 +19,22 @@ static func all_cards() -> Array[Dictionary]:
 			"shape": "circle",
 			"color": Color(0.45, 0.83, 0.86),
 			"trial_note": "低费多数量，测试场面铺开速度。",
-			"task_placeholder": "预留：本局累计存活时间。",
-			"evolution_placeholder": "预留：数量分裂方向。"
+			"task": {
+				"type": "card_play_count",
+				"summary": "本局中打出过三次星屑群。",
+				"progress_label": "星屑群",
+				"watch_card_id": "spark_swarm",
+				"target": 3
+			},
+			"evolution": {
+				"id": "spark_drift",
+				"name": "星屑漂流",
+				"short_name": "漂",
+				"summary": "数量变为 6，其余效果属性不变。",
+				"overrides": {
+					"count": 6
+				}
+			}
 		},
 		{
 			"id": "shield_pair",
@@ -39,8 +53,23 @@ static func all_cards() -> Array[Dictionary]:
 			"shape": "square",
 			"color": Color(0.52, 0.70, 0.96),
 			"trial_note": "中低费承伤单位，测试抗线价值。",
-			"task_placeholder": "预留：替友方承受伤害。",
-			"evolution_placeholder": "预留：护盾或嘲讽方向。"
+			"task": {
+				"type": "unit_hp_below_ratio",
+				"summary": "当前血量低于 2/3。",
+				"progress_label": "低血",
+				"watch_card_id": "shield_pair",
+				"target": 1,
+				"hp_ratio": 0.6667
+			},
+			"evolution": {
+				"id": "steadfast_guard",
+				"name": "坚盾护卫",
+				"short_name": "坚",
+				"summary": "生命值翻倍，其余效果属性不变。",
+				"overrides": {
+					"hp": 184.0
+				}
+			}
 		},
 		{
 			"id": "cleaver",
@@ -60,8 +89,24 @@ static func all_cards() -> Array[Dictionary]:
 			"shape": "triangle",
 			"color": Color(0.93, 0.70, 0.37),
 			"trial_note": "近战范围伤害，测试反杂兵能力。",
-			"task_placeholder": "预留：一次攻击命中多个目标。",
-			"evolution_placeholder": "预留：扩大范围或附带击退。"
+			"task": {
+				"type": "card_kill_count",
+				"summary": "所有旋刃兵在本局中总共杀死超过 12 个敌人。",
+				"progress_label": "击杀",
+				"watch_card_id": "cleaver",
+				"target": 13,
+				"target_text": ">12"
+			},
+			"evolution": {
+				"id": "wheel_blade",
+				"name": "轮刃兵",
+				"short_name": "轮",
+				"summary": "攻击间隔减少到 1.2 秒，射程提升到 3。",
+				"overrides": {
+					"attack_cooldown": 1.2,
+					"range": 3.0
+				}
+			}
 		},
 		{
 			"id": "quick_archer",
@@ -80,8 +125,23 @@ static func all_cards() -> Array[Dictionary]:
 			"shape": "circle",
 			"color": Color(0.57, 0.86, 0.54),
 			"trial_note": "高频低伤远程，测试持续输出读秒。",
-			"task_placeholder": "预留：连续攻击同一目标。",
-			"evolution_placeholder": "预留：攻速叠加方向。"
+			"task": {
+				"type": "card_play_burst",
+				"summary": "3 秒钟内使用 3 个连弩手。",
+				"progress_label": "连发",
+				"watch_card_id": "quick_archer",
+				"target": 3,
+				"window": 3.0
+			},
+			"evolution": {
+				"id": "roaming_archer",
+				"name": "漫游弓手",
+				"short_name": "游",
+				"summary": "一次攻击同时攻击两个敌对目标。",
+				"overrides": {
+					"multi_target_count": 2
+				}
+			}
 		},
 		{
 			"id": "ember_mage",
@@ -100,8 +160,22 @@ static func all_cards() -> Array[Dictionary]:
 			"shape": "triangle",
 			"color": Color(0.95, 0.43, 0.35),
 			"trial_note": "慢频高伤远程，测试爆发换线。",
-			"task_placeholder": "预留：击杀低血目标。",
-			"evolution_placeholder": "预留：点燃或穿透方向。"
+			"task": {
+				"type": "single_unit_kill_count",
+				"summary": "一名秘火手击杀 3 名敌人。",
+				"progress_label": "单体击杀",
+				"watch_card_id": "ember_mage",
+				"target": 3
+			},
+			"evolution": {
+				"id": "fire_thrower",
+				"name": "投火手",
+				"short_name": "投",
+				"summary": "攻击落点附带半径为 2 的 AOE。",
+				"overrides": {
+					"aoe_radius": 2.0
+				}
+			}
 		},
 		{
 			"id": "arcane_giant",
@@ -121,8 +195,24 @@ static func all_cards() -> Array[Dictionary]:
 			"target_base_only": true,
 			"color": Color(0.80, 0.66, 0.96),
 			"trial_note": "慢速高血量，只盯基地，测试推进压力。",
-			"task_placeholder": "预留：对基地造成伤害。",
-			"evolution_placeholder": "预留：攻城或死亡召唤方向。"
+			"task": {
+				"type": "mana_reached",
+				"summary": "拥有 10 点法力。",
+				"progress_label": "法力",
+				"target": 10
+			},
+			"evolution": {
+				"id": "arcane_power_giant",
+				"name": "奥能巨像",
+				"short_name": "能",
+				"summary": "基础半径变为 2；每 0.6 秒对 2.1 范围内造成 6 点 AOE 伤害。",
+				"overrides": {
+					"radius": 2.0,
+					"aura_interval": 0.6,
+					"aura_radius": 2.1,
+					"aura_damage": 6.0
+				}
+			}
 		},
 		{
 			"id": "soul_lance",
@@ -132,13 +222,28 @@ static func all_cards() -> Array[Dictionary]:
 			"kind": "spell",
 			"cost": 3,
 			"damage": 82.0,
-			"base_damage": 42.0,
+			"base_damage": 33.0,
 			"radius": 4.4,
 			"spell_mode": "single",
 			"color": Color(0.73, 0.55, 0.95),
 			"trial_note": "指定区域内命中最近单体；贴近基地时造成较低基地伤害。",
-			"task_placeholder": "预留：用法术击杀关键单位。",
-			"evolution_placeholder": "预留：斩杀或回费方向。"
+			"task": {
+				"type": "base_hit_count",
+				"summary": "用裂魂矢攻击三次敌方基底。",
+				"progress_label": "攻基",
+				"watch_card_id": "soul_lance",
+				"target": 3
+			},
+			"evolution": {
+				"id": "sky_rift_arrow",
+				"name": "裂天矢",
+				"short_name": "天",
+				"summary": "费用变为 5；对己方基地到目标点路径上所有单位和基地造成伤害，己方基地也会被路径命中。",
+				"overrides": {
+					"cost": 5,
+					"spell_mode": "line"
+				}
+			}
 		},
 		{
 			"id": "starfall",
@@ -153,7 +258,21 @@ static func all_cards() -> Array[Dictionary]:
 			"spell_mode": "area",
 			"color": Color(0.96, 0.82, 0.42),
 			"trial_note": "范围伤害，测试清杂兵和压基地的取舍。",
-			"task_placeholder": "预留：一次命中多个敌人。",
-			"evolution_placeholder": "预留：扩大范围或持续区域。"
+			"task": {
+				"type": "linked_card_play_count",
+				"summary": "使用 3 次星屑群。",
+				"progress_label": "星屑群",
+				"watch_card_id": "spark_swarm",
+				"target": 3
+			},
+			"evolution": {
+				"id": "star_scatter",
+				"name": "星散",
+				"short_name": "散",
+				"summary": "范围半径扩大到 12。",
+				"overrides": {
+					"radius": 12.0
+				}
+			}
 		}
 	]
