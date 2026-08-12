@@ -1,0 +1,235 @@
+{
+  "formatVersion": 1,
+  "workspace": {
+    "id": "workspace-demo",
+    "name": "Untitled Workspace"
+  },
+  "cards": [
+    {
+      "id": "card-0564f335-0f78-4848-aa3c-8238b23eac60",
+      "title": "百骸公国",
+      "body": "机械骑士团\n核心思路是衍生物（无法携带）\n晋升是“授剑礼”",
+      "tags": [
+        "主题"
+      ]
+    },
+    {
+      "id": "card-d3239e24-7e01-43a3-9c17-0fd7fa7a55c7",
+      "title": "百骸一心",
+      "body": "1c法术，持续6秒\n法术范围内每死一个友方单位，获得1c\n进化后不要求友方"
+    },
+    {
+      "id": "card-b35f6100-bede-433d-8d28-3ba32ba953be",
+      "title": "沸腾 · 躁动",
+      "body": "狂暴\n\n转变为升级后的单位"
+    },
+    {
+      "id": "card-230be032-97ea-4796-a1e2-7bbcece77803",
+      "title": "Untitled Card",
+      "body": "炼金术\n核心是变化",
+      "tags": [
+        "主题"
+      ]
+    },
+    {
+      "id": "card-2d67fec4-6e45-405f-abb6-260fe549406d",
+      "title": "书卷侍童",
+      "body": "近战\n死亡时回1费\n仅对建筑有仇恨",
+      "tags": [
+        "衍生物"
+      ]
+    },
+    {
+      "id": "card-7b12b611-21cf-481d-b734-092591702baa",
+      "title": "持剑侍童",
+      "body": "高速脆弱近战\n仅对建筑有仇恨"
+    },
+    {
+      "id": "card-f511d16b-721f-4b13-a06a-f56bddec65e0",
+      "title": "启明侍童",
+      "body": "近战\n死亡时创建aoe烧地板（对建筑伤害低）\n仅对建筑有仇恨"
+    },
+    {
+      "id": "card-58db73b7-b102-44e4-997f-f7a7439d89ce",
+      "title": "胆怯侍从",
+      "body": "3c单位，远程\n入场时，召唤一个书卷侍童。\n进化后变为游走侍从"
+    },
+    {
+      "id": "card-efae1511-0350-4307-baf7-2d0b56cc3225",
+      "title": "见习骑士征召",
+      "body": "4c法术\n在指定位置召唤一个启明侍童\n进化后：如果是自己半场，召唤2个"
+    },
+    {
+      "id": "card-75cb9dab-ef35-44be-9472-0d2e77fdacd8",
+      "title": "方旗骑士",
+      "body": "5c，aoe单位\n范围内每死掉一个侍童，都会获得攻防增强\n进化后入场召唤2个书卷侍童"
+    },
+    {
+      "id": "card-9ae1004c-b514-459a-9487-7cde66557d13",
+      "title": "大十字骑士",
+      "body": "8c，巨型\n入场时召唤3个书卷侍童\n每个范围内的侍童都会为其提供加强\n进化后会替范围内的所有侍童吸收伤害"
+    },
+    {
+      "id": "card-70540ed1-1af5-4922-9573-fddd7ad4bd66",
+      "title": "小小骑士团",
+      "body": "3c单位\n召唤3个持剑侍童。\n3秒后，再召唤3个"
+    },
+    {
+      "id": "card-7afd1502-723c-4971-aca1-e4e17633704a",
+      "title": "游走侍从",
+      "body": "4c单位，远程\n入场时，召唤一个书卷侍童。\n过桥后，再召唤一个书卷侍童。"
+    },
+    {
+      "id": "card-185ad045-6eb7-4d61-8b12-70c2be2bd0c8",
+      "title": "管网骑士",
+      "body": "6c\n入场与每隔六秒钟，召唤一个持剑侍童\n进化后：入场时再召唤一个启明侍童"
+    },
+    {
+      "id": "card-32fa4fa6-7ae7-46f2-be18-da5c2438d9b0",
+      "title": "水脉骑士",
+      "body": "4c，远程\n在场时，场上每死掉一个侍童，都会获得射程和攻击增强\n进化后入场召唤2个持剑侍童"
+    }
+  ],
+  "relations": [
+    {
+      "id": "relation-922990a9-a7ad-4ab9-ad09-412b01d0661e",
+      "sourceCardId": "card-0564f335-0f78-4848-aa3c-8238b23eac60",
+      "targetCardId": "card-2d67fec4-6e45-405f-abb6-260fe549406d",
+      "kind": "semantic",
+      "label": ""
+    },
+    {
+      "id": "relation-0517253f-e70c-43b3-a5e7-0752e7dc75f4",
+      "sourceCardId": "card-0564f335-0f78-4848-aa3c-8238b23eac60",
+      "targetCardId": "card-7b12b611-21cf-481d-b734-092591702baa",
+      "kind": "semantic",
+      "label": ""
+    },
+    {
+      "id": "relation-7e5c7fca-4613-4560-a700-dcad0596b65e",
+      "sourceCardId": "card-0564f335-0f78-4848-aa3c-8238b23eac60",
+      "targetCardId": "card-f511d16b-721f-4b13-a06a-f56bddec65e0",
+      "kind": "semantic",
+      "label": ""
+    }
+  ],
+  "views": [
+    {
+      "id": "view-default",
+      "name": "Default View",
+      "camera": {
+        "x": 1311,
+        "y": -259,
+        "zoom": 0.862
+      },
+      "cardInstances": [
+        {
+          "cardId": "card-0564f335-0f78-4848-aa3c-8238b23eac60",
+          "x": -133,
+          "y": 113,
+          "width": 281,
+          "height": 236
+        },
+        {
+          "cardId": "card-d3239e24-7e01-43a3-9c17-0fd7fa7a55c7",
+          "x": 190,
+          "y": -260,
+          "width": 328,
+          "height": 167
+        },
+        {
+          "cardId": "card-b35f6100-bede-433d-8d28-3ba32ba953be",
+          "x": -847,
+          "y": 1211,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-230be032-97ea-4796-a1e2-7bbcece77803",
+          "x": -1017,
+          "y": 1010,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-2d67fec4-6e45-405f-abb6-260fe549406d",
+          "x": -466,
+          "y": -65,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-7b12b611-21cf-481d-b734-092591702baa",
+          "x": -474,
+          "y": 128,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-f511d16b-721f-4b13-a06a-f56bddec65e0",
+          "x": -467,
+          "y": 322,
+          "width": 321,
+          "height": 171
+        },
+        {
+          "cardId": "card-58db73b7-b102-44e4-997f-f7a7439d89ce",
+          "x": 227,
+          "y": 163,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-efae1511-0350-4307-baf7-2d0b56cc3225",
+          "x": 202,
+          "y": 394,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-75cb9dab-ef35-44be-9472-0d2e77fdacd8",
+          "x": 193,
+          "y": 623,
+          "width": 347,
+          "height": 174
+        },
+        {
+          "cardId": "card-9ae1004c-b514-459a-9487-7cde66557d13",
+          "x": 197,
+          "y": 1212,
+          "width": 330,
+          "height": 175
+        },
+        {
+          "cardId": "card-70540ed1-1af5-4922-9573-fddd7ad4bd66",
+          "x": 226,
+          "y": -52,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-7afd1502-723c-4971-aca1-e4e17633704a",
+          "x": 497,
+          "y": 170,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-185ad045-6eb7-4d61-8b12-70c2be2bd0c8",
+          "x": 185,
+          "y": 1009,
+          "width": 338,
+          "height": 175
+        },
+        {
+          "cardId": "card-32fa4fa6-7ae7-46f2-be18-da5c2438d9b0",
+          "x": 178,
+          "y": 833,
+          "width": 442,
+          "height": 155
+        }
+      ]
+    }
+  ],
+  "activeViewId": "view-default"
+}
