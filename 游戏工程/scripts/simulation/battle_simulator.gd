@@ -249,7 +249,7 @@ func update_units(delta: float) -> void:
 		var target_position: Vector2 = target["pos"]
 		var unit_position: Vector2 = unit["pos"]
 		var distance: float = unit_position.distance_to(target_position)
-		var attack_distance: float = float(unit["range"]) + float(target["radius"])
+		var attack_distance: float = float(unit["range"]) + float(unit["radius"]) + float(target["radius"])
 
 		if distance <= attack_distance:
 			if float(unit["attack_timer"]) <= 0.0:
@@ -259,6 +259,7 @@ func update_units(delta: float) -> void:
 			_move_unit_toward(unit, _next_step_goal(unit, target_position), delta)
 
 	_separate_units()
+	_clamp_positions_to_map_border()
 
 	var alive_units: Array[Dictionary] = []
 	for unit in units:
@@ -269,7 +270,9 @@ func update_units(delta: float) -> void:
 	units = alive_units
 
 
-# 碰撞分离：推开所有互相重叠的单位（同阵营与敌方都分离，避免重叠）。
+# 碰撞分离：推开所有互相重叠的单位（同阵营与敌方都分离）。
+# 攻击CD中的单位位置锁定，作为固定障碍：自己不被推动，但对方会被推开全部重叠量。
+# 双方都在攻击CD中时保持原位（交战状态，重叠可接受）。
 func _separate_units() -> void:
 	var alive_count: int = 0
 	for unit in units:
@@ -282,6 +285,7 @@ func _separate_units() -> void:
 			continue
 		var pos_a: Vector2 = unit_a["pos"]
 		var radius_a: float = float(unit_a["radius"])
+		var a_locked: bool = float(unit_a["attack_timer"]) > 0.0
 
 		for j in range(i + 1, alive_count):
 			var unit_b: Dictionary = units[j]
@@ -289,6 +293,11 @@ func _separate_units() -> void:
 				continue
 			var pos_b: Vector2 = unit_b["pos"]
 			var radius_b: float = float(unit_b["radius"])
+			var b_locked: bool = float(unit_b["attack_timer"]) > 0.0
+
+			# 双方都在攻击CD中：保持原位（交战状态）。
+			if a_locked and b_locked:
+				continue
 
 			var delta_pos: Vector2 = pos_a - pos_b
 			var dist: float = delta_pos.length()
@@ -298,10 +307,33 @@ func _separate_units() -> void:
 
 			var overlap: float = min_dist - dist
 			var direction: Vector2 = delta_pos.normalized()
-			# 双方各推一半，向相反方向分离。
-			var push: Vector2 = direction * overlap * 0.5
-			unit_a["pos"] = pos_a + push
-			unit_b["pos"] = pos_b - push
+			if a_locked:
+				# A锁定，B被推开全部重叠量。
+				unit_b["pos"] = pos_b - direction * overlap
+				pos_b = unit_b["pos"]
+			elif b_locked:
+				# B锁定，A被推开全部重叠量。
+				unit_a["pos"] = pos_a + direction * overlap
+				pos_a = unit_a["pos"]
+			else:
+				# 双方都可移动，各推一半。
+				var push: Vector2 = direction * overlap * 0.5
+				unit_a["pos"] = pos_a + push
+				unit_b["pos"] = pos_b - push
+				pos_a = unit_a["pos"]
+				pos_b = unit_b["pos"]
+
+
+# 战场硬边界：将所有存活单位限制在地图范围内（留单位半径的外边距）。
+func _clamp_positions_to_map_border() -> void:
+	var margin_x: float = 3.5
+	var margin_y: float = 3.5
+	for unit in units:
+		if float(unit["hp"]) <= 0.0:
+			continue
+		var radius: float = float(unit["radius"])
+		unit["pos"].x = clamp(unit["pos"].x, margin_x + radius, Config.MAP_WIDTH - margin_x - radius)
+		unit["pos"].y = clamp(unit["pos"].y, margin_y + radius, Config.MAP_HEIGHT - margin_y - radius)
 
 
 # 为单位寻找攻击目标：优先仇敌范围内的敌方单位，否则目标为基地。
@@ -315,7 +347,7 @@ func _find_target(unit: Dictionary) -> Dictionary:
 			"radius": Config.BASE_RADIUS
 		}
 
-	var aggro_range: float = max(9.0, float(unit["range"]) + 4.0)
+	var aggro_range: float = max(9.0, float(unit["range"]) + float(unit["radius"]) + 4.0)
 	var best_unit: Dictionary = {}
 	var best_distance: float = INF
 	for enemy in units:
@@ -383,7 +415,7 @@ func _damage_extra_attack_targets(unit: Dictionary, excluded_unit_ids: Array[int
 			if enemy["side"] == unit["side"] or enemy["hp"] <= 0.0 or excluded_unit_ids.has(int(enemy["id"])):
 				continue
 			var distance: float = unit["pos"].distance_to(enemy["pos"])
-			if distance <= float(unit["range"]) + float(enemy["radius"]) and distance < best_distance:
+			if distance <= float(unit["range"]) + float(unit["radius"]) + float(enemy["radius"]) and distance < best_distance:
 				best_distance = distance
 				best_unit = enemy
 		if best_unit.size() == 0:
