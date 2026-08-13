@@ -52,3 +52,16 @@ const BOT_DECK_IDS: Array[String] = [
 	"ember_mage",
 	"arcane_giant"
 ]
+
+# —— V0.4 锁步联机默认参数（可随手感调整）——
+const TICK_RATE: int = 60               # 模拟 tick 频率 Hz
+const TICK_DT: float = 1.0 / float(TICK_RATE)  # ≈0.0167s 每 tick
+const INPUT_DELAY_TICKS: int = 4       # 输入延迟 tick（4 tick ≈ 67ms @60Hz）
+const DESYNC_CHECK_INTERVAL: int = 30  # 每 30 tick（0.5s）做一次校验和比对
+
+# —— V0.4 定点数精度约定（P1 引入）——
+const FP_SCALE: int = 1000              # Q*1000 定点精度
+const FP_SCALE_F: float = 1000.0
+
+# —— V0.4 断线策略（P4 引入）——
+const DISCONNECT_PAUSE_SECONDS: float = 30.0  # 断线暂停等待时长，超时判负

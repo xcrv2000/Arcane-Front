@@ -167,12 +167,12 @@ func track_card_play(side: String, played_card_id: String) -> void:
 # card_play_burst 任务：在时间窗口内累计使用次数。
 func _track_burst_card_play(side: String, card_id: String, state: Dictionary, task: Dictionary) -> void:
 	var recent_uses: Array = state.get("recent_uses", [])
-	recent_uses.append(simulator.battle_time)
+	recent_uses.append(simulator.battle_time())
 	var window: float = float(task.get("window", 3.0))
 	var filtered_uses: Array = []
 	for raw_time in recent_uses:
 		var use_time: float = float(raw_time)
-		if simulator.battle_time - use_time <= window:
+		if simulator.battle_time() - use_time <= window:
 			filtered_uses.append(use_time)
 	state["recent_uses"] = filtered_uses
 	state["progress"] = float(filtered_uses.size())
@@ -272,7 +272,7 @@ func _complete_task(side: String, card_id: String) -> void:
 	state["completed"] = true
 	state["evolved"] = evolution.size() > 0
 	state["progress"] = float(task.get("target", state.get("progress", 0.0)))
-	state["completed_at_time"] = simulator.battle_time
+	state["completed_at_time"] = simulator.battle_time()
 	side_tasks[card_id] = state
 	simulator.record_task_completed(side, evolution.size() > 0, card_id)
 	if evolution.size() > 0:
