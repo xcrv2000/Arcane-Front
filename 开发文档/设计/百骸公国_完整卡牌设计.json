@@ -1,0 +1,569 @@
+{
+  "formatVersion": 1,
+  "faction": {
+    "name": "百骸公国",
+    "theme": "由机械构成的亡灵公国与机械骑士团。",
+    "coreMechanic": "衍生物（无法携带）",
+    "evolutionFlavorName": "授剑礼"
+  },
+  "globalRules": {
+    "derivativeUnits": {
+      "description": "衍生物无法携带，但仍然拥有费用；费用表示该单位相当于多少费的单位价值。",
+      "canBeIncludedInDeck": false,
+      "hasCostValue": true
+    },
+    "evolutionTasks": {
+      "globalAccumulation": true,
+      "countFromMatchStart": true,
+      "requireCardDrawn": false,
+      "requireCardPlayed": false,
+      "note": "所有以己方累计、全场累计等方式描述的进化任务，均从对局开始进行全局累计。若任务明确要求单个单位实例完成，则按该实例独立记录。"
+    },
+    "buffStacking": {
+      "sameSourceStacksLinearly": true
+    },
+    "costGain": {
+      "cannotExceedPlayerCostCap": true
+    }
+  },
+  "units": [
+    {
+      "name": "书卷侍童",
+      "type": "单位",
+      "tags": [
+        "侍童",
+        "衍生物"
+      ],
+      "canBeIncludedInDeck": false,
+      "cost": 1,
+      "stats": {
+        "health": "低",
+        "damagePerHit": "低",
+        "attackSpeed": "中",
+        "attackType": "近战",
+        "moveSpeed": "中"
+      },
+      "targeting": {
+        "rule": "仅对建筑有仇恨",
+        "implementation": "使用已有的、与巨像相同的建筑仇恨规则"
+      },
+      "deathEffect": {
+        "trigger": "死亡事件",
+        "effect": "为该单位拥有者回复1费",
+        "costGain": 1,
+        "owner": "该单位拥有者",
+        "sourceRestriction": "无",
+        "cannotExceedCostCap": true
+      },
+      "interactions": {
+        "note": "可以触发所有监听侍童死亡的效果",
+        "triggersAllSquireDeathEffects": true
+      }
+    },
+    {
+      "name": "持剑侍童",
+      "type": "单位",
+      "tags": [
+        "侍童",
+        "衍生物"
+      ],
+      "canBeIncludedInDeck": false,
+      "cost": 1,
+      "stats": {
+        "health": "极低",
+        "damagePerHit": "低",
+        "attackSpeed": "高",
+        "attackType": "近战",
+        "moveSpeed": "高"
+      },
+      "targeting": {
+        "rule": "仅对建筑有仇恨",
+        "implementation": "使用已有的、与巨像相同的建筑仇恨规则"
+      },
+      "specialEffects": []
+    },
+    {
+      "name": "启明侍童",
+      "type": "单位",
+      "tags": [
+        "侍童",
+        "衍生物"
+      ],
+      "canBeIncludedInDeck": false,
+      "cost": 3,
+      "stats": {
+        "health": "低",
+        "damagePerHit": "低",
+        "attackSpeed": "低",
+        "attackType": "近战",
+        "moveSpeed": "中"
+      },
+      "targeting": {
+        "rule": "仅对建筑有仇恨",
+        "implementation": "使用已有的、与巨像相同的建筑仇恨规则"
+      },
+      "deathEffect": {
+        "trigger": "死亡事件",
+        "center": "死亡位置",
+        "explosion": {
+          "shape": "圆形AOE",
+          "radius": 6,
+          "damageToUnits": "中",
+          "damageToBuildings": "高"
+        },
+        "fireZone": {
+          "shape": "圆形AOE",
+          "radius": 6,
+          "durationSeconds": 3,
+          "firstTickDelaySeconds": 0.5,
+          "tickIntervalSeconds": 0.5,
+          "totalTicks": 6,
+          "damageToUnitsPerTick": "低",
+          "damageToBuildingsPerTick": "极低",
+          "targetingLogic": "每次结算时，对当时位于区域内的所有敌方单位造成伤害；不记录进入时间或停留时间",
+          "overlapRule": "多个火焰区域独立结算伤害"
+        }
+      }
+    },
+    {
+      "name": "胆怯侍从",
+      "type": "单位",
+      "canBeIncludedInDeck": true,
+      "cost": 3,
+      "stats": {
+        "health": "中",
+        "damagePerHit": "低",
+        "attackSpeed": "中",
+        "attackType": "远程",
+        "range": "中",
+        "moveSpeed": "中"
+      },
+      "targeting": {
+        "rule": "默认"
+      },
+      "entryEffect": {
+        "summon": {
+          "unit": "书卷侍童",
+          "count": 1
+        }
+      },
+      "evolution": {
+        "name": "游走侍从",
+        "task": {
+          "type": "globalCounter",
+          "event": "己方书卷侍童死亡",
+          "requiredCount": 3,
+          "countEnemy": false,
+          "requireSourceUnitOnField": false
+        },
+        "evolvedCard": {
+          "cost": 4,
+          "statsChanges": {
+            "damagePerHit": "中"
+          },
+          "inheritedStats": [
+            "生命",
+            "攻击速度",
+            "攻击方式",
+            "射程",
+            "移动速度",
+            "攻击目标"
+          ],
+          "entryEffect": {
+            "summon": {
+              "unit": "书卷侍童",
+              "count": 1
+            }
+          },
+          "bridgeEffect": {
+            "trigger": "已有的过桥地图判定",
+            "effect": {
+              "summon": {
+                "unit": "书卷侍童",
+                "count": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "方旗骑士",
+      "type": "单位",
+      "canBeIncludedInDeck": true,
+      "cost": 5,
+      "stats": {
+        "health": "高",
+        "damagePerHit": "中",
+        "attackSpeed": "中",
+        "attackType": "AOE",
+        "aoeRange": "中",
+        "moveSpeed": "中"
+      },
+      "targeting": {
+        "rule": "默认"
+      },
+      "entryEffect": null,
+      "evolution": {
+        "name": "方旗骑士长",
+        "task": {
+          "type": "singleUnitInstanceCounter",
+          "event": "该方旗骑士击杀敌方单位",
+          "requiredCount": 3
+        },
+        "evolvedCard": {
+          "inheritsAllStatsAndRules": true,
+          "entryEffect": {
+            "summon": {
+              "unit": "书卷侍童",
+              "count": 2,
+              "formation": "左右两侧雁形展开"
+            }
+          }
+        }
+      },
+      "squireDeathBuff": {
+        "listenOwner": "己方",
+        "listenTag": "侍童",
+        "listenRange": "大",
+        "perStack": {
+          "attackPercent": 25,
+          "attackCooldownPercent": -10,
+          "damageReductionPercent": 10
+        },
+        "maxStacks": 3,
+        "duration": "持续至该单位死亡",
+        "stacking": "线性叠加",
+        "maxStackResult": {
+          "attackPercent": 75,
+          "attackCooldownPercent": -30,
+          "damageReductionPercent": 30
+        }
+      }
+    },
+    {
+      "name": "大十字骑士",
+      "type": "单位",
+      "tags": [
+        "巨型"
+      ],
+      "canBeIncludedInDeck": true,
+      "cost": 8,
+      "stats": {
+        "health": "极高",
+        "damagePerHit": "高",
+        "attackSpeed": "慢",
+        "attackType": "默认",
+        "moveSpeed": "中"
+      },
+      "targeting": {
+        "rule": "仅建筑"
+      },
+      "entryEffect": {
+        "summon": {
+          "unit": "书卷侍童",
+          "count": 3,
+          "formation": "在骑士身后横向生成"
+        }
+      },
+      "evolution": {
+        "name": "大十字骑士团",
+        "task": {
+          "type": "globalSimultaneousState",
+          "condition": "场上同时存在9名或更多己方侍童",
+          "requiredCount": 9
+        },
+        "evolvedCard": {
+          "inheritsAllBaseStatsAndAuraRules": true,
+          "targetingChange": {
+            "rule": "默认"
+          },
+          "damageTransfer": {
+            "range": "中",
+            "targets": "范围内所有己方侍童",
+            "rule": "侍童本应受到的伤害改为由大十字骑士团受到",
+            "transferredDamageCountsAsNormalDamage": true,
+            "aoeBehavior": "AOE同时命中多个受保护侍童时，大十字骑士团承受多份独立伤害"
+          },
+          "squireMoveSpeedSync": {
+            "range": "中",
+            "targets": "范围内所有己方侍童",
+            "effect": "移动速度设置为当前大十字骑士团的移动速度"
+          }
+        }
+      },
+      "squireAura": {
+        "range": "中",
+        "realtime": true,
+        "maxStacks": null,
+        "stacking": "线性叠加",
+        "effects": [
+          {
+            "perUnitEffect": {
+              "attackCooldownPercent": -5
+            },
+            "squireType": "书卷侍童"
+          },
+          {
+            "perUnitEffect": {
+              "moveSpeedPercent": 5
+            },
+            "squireType": "持剑侍童"
+          },
+          {
+            "perUnitEffect": {
+              "attackPercent": 5
+            },
+            "squireType": "启明侍童"
+          }
+        ]
+      }
+    },
+    {
+      "name": "管网骑士",
+      "type": "单位",
+      "canBeIncludedInDeck": true,
+      "cost": 6,
+      "stats": {
+        "health": "中",
+        "damagePerHit": "低",
+        "attackSpeed": "中",
+        "attackType": "近战",
+        "moveSpeed": "慢"
+      },
+      "targeting": {
+        "rule": "默认"
+      },
+      "summonEffects": {
+        "entry": {
+          "unit": "持剑侍童",
+          "count": 1,
+          "position": "管网骑士附近随机"
+        },
+        "periodic": {
+          "unit": "持剑侍童",
+          "count": 1,
+          "intervalSeconds": 6,
+          "firstTriggerAfterSeconds": 6,
+          "position": "管网骑士附近随机",
+          "duration": "持续至管网骑士死亡"
+        }
+      },
+      "evolution": {
+        "name": "管网骑士长",
+        "task": {
+          "type": "globalCounter",
+          "event": "己方召唤侍童",
+          "requiredCount": 6,
+          "countFromMatchStart": true,
+          "require管网骑士OnField": false
+        },
+        "evolvedCard": {
+          "inheritsAllStatsAndRules": true,
+          "additionalEntrySummon": {
+            "unit": "启明侍童",
+            "count": 1,
+            "position": "管网骑士附近随机"
+          }
+        }
+      }
+    },
+    {
+      "name": "水脉骑士",
+      "type": "单位",
+      "canBeIncludedInDeck": true,
+      "cost": 4,
+      "stats": {
+        "health": "中低",
+        "damagePerHit": "高",
+        "attackSpeed": "慢",
+        "attackType": "远程",
+        "range": "高",
+        "moveSpeed": "慢"
+      },
+      "targeting": {
+        "rule": "默认"
+      },
+      "evolution": {
+        "name": "水脉骑士长",
+        "task": {
+          "type": "globalCounter",
+          "event": "己方侍童死亡",
+          "requiredCount": 6,
+          "requireSourceUnitOnField": false,
+          "requireDeathWithinListenRange": false
+        },
+        "evolvedCard": {
+          "inheritsAllStatsAndRules": true,
+          "entryEffect": {
+            "summon": {
+              "unit": "持剑侍童",
+              "count": 2,
+              "formation": "在后方雁形展开"
+            }
+          }
+        }
+      },
+      "squireDeathBuff": {
+        "listenOwner": "己方",
+        "listenTag": "侍童",
+        "listenRange": "大",
+        "rangeRelation": "初始监听范围大于攻击射程；获得足够层数后，攻击射程可以超过监听范围",
+        "perStack": {
+          "rangePercent": 10,
+          "attackPercent": 5
+        },
+        "maxStacks": 3,
+        "duration": "持续至该单位死亡",
+        "stacking": "线性叠加",
+        "maxStackResult": {
+          "rangePercent": 30,
+          "attackPercent": 15
+        }
+      }
+    }
+  ],
+  "spells": [
+    {
+      "name": "见习骑士征召",
+      "type": "法术",
+      "canBeIncludedInDeck": true,
+      "cost": 4,
+      "castArea": "全场",
+      "effect": {
+        "summon": {
+          "unit": "启明侍童",
+          "count": 1,
+          "position": "法术选定点"
+        }
+      },
+      "evolution": {
+        "name": "见习骑士集结",
+        "task": {
+          "type": "globalCounter",
+          "event": "己方侍童出场",
+          "requiredCount": 6
+        },
+        "evolvedCard": {
+          "cost": 4,
+          "castArea": "全场",
+          "enemyHalfEffect": {
+            "summon": {
+              "unit": "启明侍童",
+              "count": 1,
+              "position": "法术选定点"
+            }
+          },
+          "ownHalfEffect": {
+            "summon": {
+              "unit": "启明侍童",
+              "count": 2,
+              "formation": "以选定点为中心一左一右生成"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "小小骑士团",
+      "type": "法术",
+      "canBeIncludedInDeck": true,
+      "cost": 3,
+      "castArea": "仅己方半场",
+      "effect": {
+        "summon": {
+          "unit": "持剑侍童",
+          "count": 3,
+          "formation": "品字形",
+          "position": "以法术选定点为中心"
+        }
+      },
+      "evolution": {
+        "name": "小小骑士骑士团团",
+        "task": {
+          "type": "globalCounter",
+          "event": "己方召唤侍童",
+          "requiredCount": 9
+        },
+        "evolvedCard": {
+          "cost": 3,
+          "castArea": "仅己方半场",
+          "firstSummon": {
+            "unit": "持剑侍童",
+            "count": 3,
+            "formation": "品字形",
+            "position": "以法术选定点为中心"
+          },
+          "delayedSummon": {
+            "delaySeconds": 3,
+            "unit": "持剑侍童",
+            "count": 3,
+            "formation": "品字形",
+            "position": "以法术选定点为中心"
+          }
+        }
+      }
+    },
+    {
+      "name": "百骸一心",
+      "type": "法术",
+      "canBeIncludedInDeck": true,
+      "cost": 2,
+      "castArea": "全场",
+      "effectArea": "中",
+      "durationSeconds": 6,
+      "effect": {
+        "listenEvent": "死亡事件",
+        "targets": "范围内己方单位",
+        "costGainPerDeath": 1,
+        "cannotExceedCostCap": true,
+        "overlapDeduplication": {
+          "scope": "同一个玩家",
+          "rule": "同一个死亡事件即使同时处于多个百骸一心区域，也最多回复1费"
+        }
+      },
+      "evolution": {
+        "name": "万骸一心",
+        "task": {
+          "type": "globalCounter",
+          "event": "全场单位死亡",
+          "requiredCount": 100,
+          "countBothSides": true,
+          "positionRestriction": "无",
+          "deathCauseRestriction": "无"
+        },
+        "evolvedCard": {
+          "cost": 2,
+          "castArea": "全场",
+          "effectArea": "中",
+          "durationSeconds": 6,
+          "effect": {
+            "listenEvent": "死亡事件",
+            "targets": "范围内任意阵营单位",
+            "costGainPerDeath": 1,
+            "cannotExceedCostCap": true,
+            "overlapDeduplication": {
+              "scope": "同一个玩家",
+              "rule": "同一个死亡事件即使同时处于多个百骸一心/万骸一心区域，也最多回复1费"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "excludedFromThisDocument": [
+    {
+      "name": "炼金术",
+      "reason": "用户指定本次不纳入"
+    },
+    {
+      "name": "沸腾 · 躁动",
+      "reason": "用户指定本次不纳入"
+    }
+  ],
+  "implementationNotes": [
+    "所有“附近随机”“雁形展开”“横向生成”“品字形”等空间规则，如项目已有统一生成规则，应引用统一规则；当前设计未给出精确距离。",
+    "所有定性数值（极低、低、中低、中、高、极高、慢等）保留为设计层级，具体数值由后续平衡表确定。",
+    "大十字骑士的第三种光环对象按现有卡名记录为“启明侍童”。"
+  ]
+}
