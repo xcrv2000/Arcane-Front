@@ -11,19 +11,29 @@
 
 ## 启动
 
-在仓库根目录运行：
+推荐方式：双击运行：
 
-```powershell
-python tools\balance_studio\server.py
+```text
+tools\balance_studio\start_balance_studio.bat
 ```
 
-然后打开：
+脚本会启动本地服务，并用默认浏览器打开正确地址。
+
+命令行方式：在仓库根目录运行：
+
+```powershell
+python tools\balance_studio\server.py --open
+```
+
+如果不使用 `--open`，则手动打开终端打印的地址，例如：
 
 ```text
 http://127.0.0.1:8765
 ```
 
 如果 8765 被占用，服务会自动尝试后续端口，并在终端打印实际 URL。
+
+不要直接双击打开 `index.html`。如果已经直接打开了，页面会尝试连接 `127.0.0.1:8765` 到 `127.0.0.1:8784`；但前提仍然是本地服务已经启动。
 
 ## 保存行为
 

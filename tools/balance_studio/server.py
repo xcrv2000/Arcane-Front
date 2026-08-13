@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import webbrowser
 from datetime import date
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -417,6 +418,16 @@ def card_metrics(card: dict[str, Any], rules: dict[str, Any]) -> dict[str, float
 class BalanceStudioHandler(BaseHTTPRequestHandler):
     server_version = "ArcaneBalanceStudio/0.1"
 
+    def end_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        super().end_headers()
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.end_headers()
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/api/cards":
@@ -477,7 +488,7 @@ class BalanceStudioHandler(BaseHTTPRequestHandler):
         print("%s - %s" % (self.address_string(), format % args))
 
 
-def run(preferred_port: int) -> None:
+def run(preferred_port: int, open_browser: bool = False) -> None:
     last_error: OSError | None = None
     for port in range(preferred_port, preferred_port + 20):
         try:
@@ -485,7 +496,10 @@ def run(preferred_port: int) -> None:
         except OSError as exc:
             last_error = exc
             continue
-        print(f"Arcane Balance Studio: http://127.0.0.1:{port}")
+        url = f"http://127.0.0.1:{port}"
+        print(f"Arcane Balance Studio: {url}")
+        if open_browser:
+            webbrowser.open(url)
         server.serve_forever()
         return
     raise SystemExit(f"No available port near {preferred_port}: {last_error}")
@@ -494,5 +508,6 @@ def run(preferred_port: int) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Arcane Frontline balance tuning tool.")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--open", action="store_true", help="Open the tool in the default browser.")
     args = parser.parse_args()
-    run(args.port)
+    run(args.port, args.open)

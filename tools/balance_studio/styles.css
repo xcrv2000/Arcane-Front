@@ -581,6 +581,28 @@ button:disabled {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.error-guide {
+  display: grid;
+  gap: var(--space-3);
+  text-align: left;
+}
+
+.error-guide strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.error-guide code {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #0d1117;
+  color: var(--blue-soft);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  overflow-wrap: anywhere;
+}
+
 .field-dialog {
   width: min(820px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 32px));

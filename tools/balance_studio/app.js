@@ -9,8 +9,11 @@
     search: "",
     dirty: false,
     saving: false,
-    error: ""
+    error: "",
+    apiBase: ""
   };
+
+  const defaultApiBases = Array.from({ length: 20 }, (_, index) => `http://127.0.0.1:${8765 + index}`);
 
   const fieldGroups = [
     {
@@ -139,11 +142,7 @@
     state.dirty = false;
     renderLoading();
     try {
-      const response = await fetch("/api/cards");
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const payload = await response.json();
+      const payload = await apiRequest("/api/cards");
       state.data = payload.data;
       state.sourcePath = payload.source_path || "游戏工程/data/cards.json";
       state.designerDocPath = payload.designer_doc_path || "开发文档/设计/设计师文档.md";
@@ -151,7 +150,7 @@
       state.compareId = secondCardId();
       showToast("已读取权威 JSON。");
     } catch (error) {
-      state.error = `无法读取 /api/cards：${error.message}`;
+      state.error = `无法读取卡牌数据：${error.message}`;
       showToast(state.error);
     }
     render();
@@ -164,15 +163,11 @@
     state.saving = true;
     renderToolbar();
     try {
-      const response = await fetch("/api/cards", {
+      const payload = await apiRequest("/api/cards", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(state.data)
       });
-      const payload = await response.json();
-      if (!response.ok || payload.ok === false) {
-        throw new Error(payload.error || `HTTP ${response.status}`);
-      }
       state.dirty = false;
       if (payload.updated_at) {
         state.data.updated_at = payload.updated_at;
@@ -183,6 +178,42 @@
     }
     state.saving = false;
     render();
+  }
+
+  async function apiRequest(path, options) {
+    const candidates = apiCandidates();
+    let lastError = null;
+
+    for (const apiBase of candidates) {
+      try {
+        const response = await fetch(`${apiBase}${path}`, options);
+        const payload = await response.json();
+        if (!response.ok || payload.ok === false) {
+          throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+        state.apiBase = apiBase;
+        if (apiBase) {
+          localStorage.setItem("balanceStudioApiBase", apiBase);
+        }
+        return payload;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    const detail = lastError ? lastError.message : "接口不可用";
+    throw new Error(`${detail}。请先运行 tools\\balance_studio\\start_balance_studio.bat，或在仓库根目录执行 python tools\\balance_studio\\server.py --open。`);
+  }
+
+  function apiCandidates() {
+    const params = new URLSearchParams(window.location.search);
+    const configured = params.get("api");
+    const saved = localStorage.getItem("balanceStudioApiBase");
+    const currentOrigin = window.location.protocol === "http:" || window.location.protocol === "https:"
+      ? window.location.origin
+      : "";
+    const values = [state.apiBase, configured, saved, currentOrigin, ...defaultApiBases].filter(Boolean);
+    return [...new Set(values)];
   }
 
   function renderLoading() {
@@ -219,7 +250,8 @@
       return;
     }
     const dirtyText = state.dirty ? "，有未保存修改" : "";
-    dom.sourceLine.textContent = state.sourcePath ? `源：${state.sourcePath}${dirtyText}` : "加载数据中";
+    const apiText = state.apiBase ? ` · 接口：${state.apiBase}` : "";
+    dom.sourceLine.textContent = state.sourcePath ? `源：${state.sourcePath}${apiText}${dirtyText}` : "加载数据中";
     dom.saveBtn.disabled = !state.dirty || state.saving || !state.data;
     dom.saveBtn.textContent = state.saving ? "保存中" : "保存";
   }
@@ -227,7 +259,15 @@
   function renderErrorState() {
     dom.cardList.innerHTML = state.error ? `<div class="empty-state">${escapeHtml(state.error)}</div>` : "";
     dom.editorHeader.innerHTML = "";
-    dom.editorForm.innerHTML = '<div class="empty-state">本地服务未返回卡牌数据</div>';
+    dom.editorForm.innerHTML = `
+      <div class="empty-state error-guide">
+        <strong>本地服务未返回卡牌数据</strong>
+        <span>请不要直接双击打开 HTML。先启动本地服务，再用浏览器访问服务地址。</span>
+        <code>tools\\balance_studio\\start_balance_studio.bat</code>
+        <span>或在仓库根目录执行：</span>
+        <code>python tools\\balance_studio\\server.py --open</code>
+      </div>
+    `;
     dom.metricsPanel.innerHTML = "";
     dom.comparePanel.innerHTML = "";
     dom.overviewPanel.innerHTML = "";
