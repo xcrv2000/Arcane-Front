@@ -13,6 +13,11 @@ const MANA_PER_SECOND: float = 0.5
 const BASE_MAX_HP: float = 300.0
 const BASE_RADIUS: float = 4.8
 const UNIT_RADIUS_SCALE: float = 2.0
+const UNIT_ART_ROOT: String = "res://assets/units/"
+const UNIT_ART_FRONT: String = "front"
+const UNIT_ART_BACK: String = "back"
+const UNIT_ART_HEIGHT_SCALE: float = 3.0
+const UNIT_ART_FOOT_OFFSET: float = 1.05
 const RIVER_Y: float = 50.0
 const PLAYER_DEPLOY_MIN_Y: float = 54.0
 const BOT_DEPLOY_MAX_Y: float = 46.0
@@ -54,6 +59,7 @@ var event_log: Array[String] = []
 var match_winner: String = ""
 var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var ui_font: Font
+var unit_art_cache: Dictionary = {}
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -274,12 +280,13 @@ func _spawn_units(side: String, card: Dictionary, target_position: Vector2) -> v
 			offset = Vector2.ZERO
 		var unit_position: Vector2 = _clamped_deploy_position(side, center + offset)
 		var unit: Dictionary = {
-			"id": next_unit_id,
-			"side": side,
-			"card_id": card["id"],
-			"name": card["name"],
-			"short_name": card["short_name"],
-			"hp": float(card["hp"]),
+				"id": next_unit_id,
+				"side": side,
+				"card_id": card["id"],
+				"art_id": String(card.get("evolved_id", card["id"])),
+				"name": card["name"],
+				"short_name": card["short_name"],
+				"hp": float(card["hp"]),
 			"max_hp": float(card["hp"]),
 			"damage": float(card["damage"]),
 			"attack_cooldown": float(card["attack_cooldown"]),
@@ -873,7 +880,8 @@ func _draw_pick_card(card: Dictionary, rect: Rect2, selected: bool) -> void:
 	_draw_panel(rect, base_color, 7.0, Color(0.34, 0.62, 0.84) if selected else Color(0.24, 0.27, 0.32), 2.0 if selected else 1.0)
 
 	var icon_rect: Rect2 = Rect2(rect.position + Vector2(10.0, 12.0), Vector2(42.0, 42.0))
-	_draw_unit_shape(card, icon_rect.get_center(), 13.0, card["color"], Color(0.04, 0.05, 0.07), String(card["short_name"]), 18)
+	if not _draw_card_art_icon(card, icon_rect.get_center(), 40.0, Color.WHITE):
+		_draw_unit_shape(card, icon_rect.get_center(), 13.0, card["color"], Color(0.04, 0.05, 0.07), String(card["short_name"]), 18)
 	_draw_text_line("%s  %d费" % [card["name"], int(card["cost"])], Rect2(rect.position + Vector2(60.0, 12.0), Vector2(rect.size.x - 70.0, 24.0)), 17, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_LEFT)
 	_draw_text_line(card["role"], Rect2(rect.position + Vector2(60.0, 38.0), Vector2(rect.size.x - 70.0, 20.0)), 14, Color(0.64, 0.71, 0.78), HORIZONTAL_ALIGNMENT_LEFT)
 
@@ -981,16 +989,75 @@ func _draw_spell_effect(effect: Dictionary) -> void:
 func _draw_unit(unit: Dictionary) -> void:
 	var center: Vector2 = _map_to_screen(unit["pos"])
 	var radius: float = _logic_to_pixels(float(unit["radius"]))
+	var side: String = String(unit["side"])
 	var fill: Color = unit["color"]
-	if unit["side"] == BOT:
+	if side == BOT:
 		fill = fill.darkened(0.25)
 	var stroke: Color = Color(0.06, 0.07, 0.08)
-	_draw_unit_shape(unit, center, radius, fill, stroke, String(unit["short_name"]), clamp(int(radius * 1.2), 12, 19))
+	_draw_unit_team_ring(center, radius, side)
+	var texture: Texture2D = _unit_art_texture(String(unit.get("art_id", unit.get("card_id", ""))), _unit_art_view_for_side(side))
+	if texture != null:
+		_draw_unit_art(texture, center, radius)
+	else:
+		_draw_unit_shape(unit, center, radius, fill, stroke, String(unit["short_name"]), clamp(int(radius * 1.2), 12, 19))
 
 	var hp_ratio: float = clamp(float(unit["hp"]) / float(unit["max_hp"]), 0.0, 1.0)
-	var bar_rect: Rect2 = Rect2(center + Vector2(-radius, radius + 3.0), Vector2(radius * 2.0, 4.0))
+	var bar_rect: Rect2 = Rect2(center + Vector2(-radius, radius + 6.0), Vector2(radius * 2.0, 4.0))
 	draw_rect(bar_rect, Color(0.04, 0.04, 0.05))
-	draw_rect(Rect2(bar_rect.position, Vector2(bar_rect.size.x * hp_ratio, bar_rect.size.y)), Color(0.28, 0.86, 0.42) if unit["side"] == PLAYER else Color(0.95, 0.36, 0.32))
+	draw_rect(Rect2(bar_rect.position, Vector2(bar_rect.size.x * hp_ratio, bar_rect.size.y)), Color(0.28, 0.86, 0.42) if side == PLAYER else Color(0.95, 0.36, 0.32))
+
+func _unit_art_view_for_side(side: String) -> String:
+	return UNIT_ART_BACK if side == PLAYER else UNIT_ART_FRONT
+
+func _card_art_id(card: Dictionary) -> String:
+	return String(card.get("evolved_id", card.get("id", "")))
+
+func _unit_art_texture(art_id: String, view: String) -> Texture2D:
+	if art_id == "":
+		return null
+	var key: String = "%s:%s" % [art_id, view]
+	if unit_art_cache.has(key):
+		return unit_art_cache[key]
+
+	var path: String = "%s%s_%s.png" % [UNIT_ART_ROOT, art_id, view]
+	var texture: Texture2D = null
+	if FileAccess.file_exists(path):
+		var image: Image = Image.load_from_file(path)
+		if image != null and not image.is_empty():
+			texture = ImageTexture.create_from_image(image)
+	unit_art_cache[key] = texture
+	return texture
+
+func _draw_unit_team_ring(center: Vector2, radius: float, side: String) -> void:
+	var color: Color = Color(0.32, 0.68, 1.0) if side == PLAYER else Color(1.0, 0.30, 0.24)
+	var fill: Color = color
+	fill.a = 0.13
+	var ring_radius: float = max(4.0, radius * 1.08)
+	draw_circle(center, ring_radius, fill)
+	draw_circle(center, ring_radius, color, false, max(2.0, radius * 0.12))
+
+func _draw_unit_art(texture: Texture2D, center: Vector2, radius: float) -> void:
+	var height: float = max(18.0, radius * UNIT_ART_HEIGHT_SCALE)
+	var aspect: float = float(texture.get_width()) / max(1.0, float(texture.get_height()))
+	var art_size: Vector2 = Vector2(height * aspect, height)
+	var bottom_center: Vector2 = center + Vector2(0.0, radius * UNIT_ART_FOOT_OFFSET)
+	var rect: Rect2 = Rect2(Vector2(bottom_center.x - art_size.x * 0.5, bottom_center.y - art_size.y), art_size)
+	draw_texture_rect(texture, rect, false)
+
+func _draw_card_art_icon(card: Dictionary, center: Vector2, height: float, modulate: Color) -> bool:
+	if String(card.get("kind", "")) != "unit":
+		return false
+	var texture: Texture2D = _unit_art_texture(_card_art_id(card), UNIT_ART_FRONT)
+	if texture == null:
+		return false
+	_draw_texture_centered_height(texture, center, height, modulate)
+	return true
+
+func _draw_texture_centered_height(texture: Texture2D, center: Vector2, height: float, modulate: Color) -> void:
+	var aspect: float = float(texture.get_width()) / max(1.0, float(texture.get_height()))
+	var draw_size: Vector2 = Vector2(height * aspect, height)
+	var rect: Rect2 = Rect2(center - draw_size * 0.5, draw_size)
+	draw_texture_rect(texture, rect, false, modulate)
 
 func _draw_unit_shape(source: Dictionary, center: Vector2, radius: float, fill: Color, stroke: Color, label: String, label_size: int) -> void:
 	var shape: String = String(source.get("shape", "circle"))
@@ -1047,7 +1114,8 @@ func _draw_battle_card(base_card: Dictionary, card: Dictionary, rect: Rect2, sel
 		bg = Color(0.18, 0.30, 0.38)
 	_draw_panel(rect, bg, 7.0, Color(0.48, 0.78, 0.94) if selected else Color(0.24, 0.27, 0.32), 2.0 if selected else 1.0)
 	var icon_center: Vector2 = rect.position + Vector2(rect.size.x * 0.5, 24.0)
-	_draw_unit_shape(card, icon_center, 12.0, card["color"] if affordable else Color(0.30, 0.32, 0.34), Color(0.04, 0.05, 0.07), String(card["short_name"]), 16)
+	if not _draw_card_art_icon(card, icon_center, 34.0, Color.WHITE if affordable else Color(0.42, 0.44, 0.46)):
+		_draw_unit_shape(card, icon_center, 12.0, card["color"] if affordable else Color(0.30, 0.32, 0.34), Color(0.04, 0.05, 0.07), String(card["short_name"]), 16)
 	_draw_text_line(card["name"], Rect2(rect.position + Vector2(3.0, 42.0), Vector2(rect.size.x - 6.0, 18.0)), 12, Color(0.92, 0.94, 0.96) if affordable else Color(0.46, 0.49, 0.54), HORIZONTAL_ALIGNMENT_CENTER)
 	_draw_text_line("%d费" % int(card["cost"]), Rect2(rect.position + Vector2(3.0, 60.0), Vector2(rect.size.x - 6.0, 15.0)), 12, Color(0.70, 0.84, 1.0) if affordable else Color(0.42, 0.46, 0.52), HORIZONTAL_ALIGNMENT_CENTER)
 	_draw_text_line(_task_progress_text(PLAYER, String(base_card["id"])), Rect2(rect.position + Vector2(3.0, 74.0), Vector2(rect.size.x - 6.0, 13.0)), 10, Color(0.90, 0.76, 0.46) if not bool(card.get("evolved", false)) else Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_CENTER)
