@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>奥术前线数值调校台</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div class="brand-copy">
+            <h1>数值调校台</h1>
+            <p id="sourceLine">加载数据中</p>
+          </div>
+        </div>
+        <div class="toolbar" role="group" aria-label="文件操作">
+          <button class="ghost-button" id="reloadBtn" type="button" title="重新读取 JSON">重新读取</button>
+          <button class="ghost-button" id="openDocBtn" type="button" title="查看字段与单位">单位说明</button>
+          <button class="primary-button" id="saveBtn" type="button" disabled>保存</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="card-rail" aria-label="卡牌列表">
+          <div class="rail-controls">
+            <input id="searchInput" class="search-input" type="search" placeholder="搜索卡牌、定位、id" autocomplete="off">
+            <div class="segmented" role="tablist" aria-label="卡牌类型">
+              <button class="segment is-active" type="button" data-filter="all">全部</button>
+              <button class="segment" type="button" data-filter="unit">生物</button>
+              <button class="segment" type="button" data-filter="spell">法术</button>
+            </div>
+          </div>
+          <div id="cardList" class="card-list"></div>
+        </aside>
+
+        <section class="editor-pane" aria-label="卡牌编辑">
+          <div id="editorHeader" class="section-head"></div>
+          <div id="editorForm" class="editor-form"></div>
+        </section>
+
+        <aside class="metrics-pane" aria-label="平衡指标">
+          <div id="metricsPanel"></div>
+          <div id="comparePanel"></div>
+          <div id="overviewPanel"></div>
+          <div id="warningsPanel"></div>
+        </aside>
+      </main>
+    </div>
+
+    <dialog id="fieldDialog" class="field-dialog">
+      <div class="dialog-head">
+        <h2>字段与单位</h2>
+        <button class="icon-button" id="closeDocBtn" type="button" title="关闭">×</button>
+      </div>
+      <div id="fieldDocs" class="field-docs"></div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,379 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-13",
+  "source": "Arcane Frontline V0.3 balance data",
+  "global_rules": {
+    "map_long_edge_logic_units": 100,
+    "unit_radius_scale": 2.0,
+    "mana_per_second": 0.5,
+    "mana_max": 10.0,
+    "base_hp": 300.0
+  },
+  "field_definitions": {
+    "cost": {
+      "label": "费用",
+      "unit": "点法力",
+      "applies_to": "全部卡牌",
+      "notes": "部署单位或施放法术时一次性消耗。当前费用上限为 10 点。"
+    },
+    "count": {
+      "label": "生成数量",
+      "unit": "个单位",
+      "applies_to": "生物",
+      "notes": "每次使用该生物卡时生成的单位数量。"
+    },
+    "hp": {
+      "label": "生命",
+      "unit": "点",
+      "applies_to": "生物",
+      "notes": "单个单位的最大生命值，不是整张卡的总生命值。整卡总生命 = hp * count。"
+    },
+    "damage": {
+      "label": "攻击力/法术伤害",
+      "unit": "点",
+      "applies_to": "全部卡牌",
+      "notes": "生物为每次普攻伤害；法术为对单位伤害。"
+    },
+    "base_damage": {
+      "label": "基地伤害",
+      "unit": "点",
+      "applies_to": "法术",
+      "notes": "法术命中基地时造成的伤害。生物攻击基地仍使用 damage。"
+    },
+    "attack_cooldown": {
+      "label": "攻击间隔",
+      "unit": "秒/次",
+      "applies_to": "生物",
+      "notes": "越小攻击越快。单体 DPS = damage / attack_cooldown。"
+    },
+    "range": {
+      "label": "射程",
+      "unit": "逻辑单位",
+      "applies_to": "生物",
+      "notes": "地图长边为 100 个逻辑单位；速度和距离都使用该尺度。"
+    },
+    "speed": {
+      "label": "移动速度",
+      "unit": "逻辑单位/秒",
+      "applies_to": "生物",
+      "notes": "速度 1 表示每秒移动 1 个逻辑单位。"
+    },
+    "radius": {
+      "label": "半径",
+      "unit": "逻辑单位",
+      "applies_to": "生物和法术",
+      "notes": "生物这里填写基础半径，实战碰撞/表现半径 = radius * unit_radius_scale；法术范围不乘倍率。"
+    },
+    "aoe_radius": {
+      "label": "范围伤害半径",
+      "unit": "逻辑单位",
+      "applies_to": "生物攻击或进化效果",
+      "notes": "攻击落点或光环效果的范围伤害半径。"
+    },
+    "aura_interval": {
+      "label": "光环间隔",
+      "unit": "秒/次",
+      "applies_to": "进化生物",
+      "notes": "光环触发频率。光环 DPS = aura_damage / aura_interval。"
+    },
+    "aura_radius": {
+      "label": "光环半径",
+      "unit": "逻辑单位",
+      "applies_to": "进化生物",
+      "notes": "以单位当前位置为中心的周期范围效果半径。"
+    },
+    "aura_damage": {
+      "label": "光环伤害",
+      "unit": "点",
+      "applies_to": "进化生物",
+      "notes": "每次光环触发时造成的伤害。"
+    },
+    "multi_target_count": {
+      "label": "同时攻击目标数",
+      "unit": "个目标",
+      "applies_to": "进化生物",
+      "notes": "用于估算理想多目标 DPS；实际收益取决于可命中的敌人数量。"
+    },
+    "spell_mode": {
+      "label": "法术模式",
+      "unit": "枚举",
+      "applies_to": "法术",
+      "notes": "single 为范围内最近单体，area 为范围伤害，line 为路径伤害。"
+    }
+  },
+  "cards": [
+    {
+      "id": "spark_swarm",
+      "name": "星屑群",
+      "short_name": "群",
+      "role": "数量杂兵",
+      "kind": "unit",
+      "cost": 2,
+      "count": 4,
+      "hp": 24.0,
+      "damage": 6.0,
+      "attack_cooldown": 0.85,
+      "range": 1.4,
+      "speed": 7.0,
+      "radius": 0.75,
+      "shape": "circle",
+      "color": "#73d4db",
+      "trial_note": "低费多数量，测试场面铺开速度。",
+      "task": {
+        "type": "card_play_count",
+        "summary": "本局中打出过三次星屑群。",
+        "progress_label": "星屑群",
+        "watch_card_id": "spark_swarm",
+        "target": 3
+      },
+      "evolution": {
+        "id": "spark_drift",
+        "name": "星屑漂流",
+        "short_name": "漂",
+        "summary": "数量变为 6，其余效果属性不变。",
+        "overrides": {
+          "count": 6
+        }
+      }
+    },
+    {
+      "id": "shield_pair",
+      "name": "盾卫",
+      "short_name": "盾",
+      "role": "肉盾杂兵",
+      "kind": "unit",
+      "cost": 3,
+      "count": 2,
+      "hp": 92.0,
+      "damage": 10.0,
+      "attack_cooldown": 1.25,
+      "range": 1.5,
+      "speed": 4.1,
+      "radius": 1.05,
+      "shape": "square",
+      "color": "#85b3f5",
+      "trial_note": "中低费承伤单位，测试抗线价值。",
+      "task": {
+        "type": "unit_hp_below_ratio",
+        "summary": "当前血量低于 2/3。",
+        "progress_label": "低血",
+        "watch_card_id": "shield_pair",
+        "target": 1,
+        "hp_ratio": 0.6667
+      },
+      "evolution": {
+        "id": "steadfast_guard",
+        "name": "坚盾护卫",
+        "short_name": "坚",
+        "summary": "生命值翻倍，其余效果属性不变。",
+        "overrides": {
+          "hp": 184.0
+        }
+      }
+    },
+    {
+      "id": "cleaver",
+      "name": "旋刃兵",
+      "short_name": "旋",
+      "role": "近战 AOE",
+      "kind": "unit",
+      "cost": 4,
+      "count": 1,
+      "hp": 128.0,
+      "damage": 18.0,
+      "attack_cooldown": 1.45,
+      "range": 1.8,
+      "speed": 4.4,
+      "radius": 1.15,
+      "aoe_radius": 3.4,
+      "shape": "triangle",
+      "color": "#edb35e",
+      "trial_note": "近战范围伤害，测试反杂兵能力。",
+      "task": {
+        "type": "card_kill_count",
+        "summary": "所有旋刃兵在本局中总共杀死超过 12 个敌人。",
+        "progress_label": "击杀",
+        "watch_card_id": "cleaver",
+        "target": 13,
+        "target_text": ">12"
+      },
+      "evolution": {
+        "id": "wheel_blade",
+        "name": "轮刃兵",
+        "short_name": "轮",
+        "summary": "攻击间隔减少到 1.2 秒，射程提升到 3。",
+        "overrides": {
+          "attack_cooldown": 1.2,
+          "range": 3.0
+        }
+      }
+    },
+    {
+      "id": "quick_archer",
+      "name": "连弩手",
+      "short_name": "频",
+      "role": "频率远程",
+      "kind": "unit",
+      "cost": 3,
+      "count": 1,
+      "hp": 54.0,
+      "damage": 7.0,
+      "attack_cooldown": 0.5,
+      "range": 12.0,
+      "speed": 3.7,
+      "radius": 0.9,
+      "shape": "circle",
+      "color": "#91db8a",
+      "trial_note": "高频低伤远程，测试持续输出读秒。",
+      "task": {
+        "type": "card_play_burst",
+        "summary": "3 秒钟内使用 3 个连弩手。",
+        "progress_label": "连发",
+        "watch_card_id": "quick_archer",
+        "target": 3,
+        "window": 3.0
+      },
+      "evolution": {
+        "id": "roaming_archer",
+        "name": "漫游弓手",
+        "short_name": "游",
+        "summary": "一次攻击同时攻击两个敌对目标。",
+        "overrides": {
+          "multi_target_count": 2
+        }
+      }
+    },
+    {
+      "id": "ember_mage",
+      "name": "秘火手",
+      "short_name": "火",
+      "role": "伤害远程",
+      "kind": "unit",
+      "cost": 4,
+      "count": 1,
+      "hp": 50.0,
+      "damage": 24.0,
+      "attack_cooldown": 1.45,
+      "range": 14.0,
+      "speed": 3.1,
+      "radius": 0.95,
+      "shape": "triangle",
+      "color": "#f26e59",
+      "trial_note": "慢频高伤远程，测试爆发换线。",
+      "task": {
+        "type": "single_unit_kill_count",
+        "summary": "一名秘火手击杀 3 名敌人。",
+        "progress_label": "单体击杀",
+        "watch_card_id": "ember_mage",
+        "target": 3
+      },
+      "evolution": {
+        "id": "fire_thrower",
+        "name": "投火手",
+        "short_name": "投",
+        "summary": "攻击落点附带半径为 2 的 AOE。",
+        "overrides": {
+          "aoe_radius": 2.0
+        }
+      }
+    },
+    {
+      "id": "arcane_giant",
+      "name": "奥术巨像",
+      "short_name": "巨",
+      "role": "巨型单位",
+      "kind": "unit",
+      "cost": 6,
+      "count": 1,
+      "hp": 270.0,
+      "damage": 34.0,
+      "attack_cooldown": 1.7,
+      "range": 2.1,
+      "speed": 2.6,
+      "radius": 1.8,
+      "shape": "square",
+      "target_base_only": true,
+      "color": "#cca8f5",
+      "trial_note": "慢速高血量，只盯基地，测试推进压力。",
+      "task": {
+        "type": "mana_reached",
+        "summary": "拥有 10 点法力。",
+        "progress_label": "法力",
+        "target": 10
+      },
+      "evolution": {
+        "id": "arcane_power_giant",
+        "name": "奥能巨像",
+        "short_name": "能",
+        "summary": "基础半径变为 2；每 0.6 秒对 2.1 范围内造成 6 点 AOE 伤害。",
+        "overrides": {
+          "radius": 2.0,
+          "aura_interval": 0.6,
+          "aura_radius": 2.1,
+          "aura_damage": 6.0
+        }
+      }
+    },
+    {
+      "id": "soul_lance",
+      "name": "裂魂矢",
+      "short_name": "矢",
+      "role": "对单法术",
+      "kind": "spell",
+      "cost": 3,
+      "damage": 82.0,
+      "base_damage": 33.0,
+      "radius": 4.4,
+      "spell_mode": "single",
+      "color": "#ba8cf2",
+      "trial_note": "指定区域内命中最近单体；贴近基地时造成较低基地伤害。",
+      "task": {
+        "type": "base_hit_count",
+        "summary": "用裂魂矢攻击三次敌方基底。",
+        "progress_label": "攻基",
+        "watch_card_id": "soul_lance",
+        "target": 3
+      },
+      "evolution": {
+        "id": "sky_rift_arrow",
+        "name": "裂天矢",
+        "short_name": "天",
+        "summary": "费用变为 5；对己方基地到目标点路径上所有单位和基地造成伤害，己方基地也会被路径命中。",
+        "overrides": {
+          "cost": 5,
+          "spell_mode": "line"
+        }
+      }
+    },
+    {
+      "id": "starfall",
+      "name": "星陨",
+      "short_name": "陨",
+      "role": "对群法术",
+      "kind": "spell",
+      "cost": 4,
+      "damage": 46.0,
+      "base_damage": 24.0,
+      "radius": 8.8,
+      "spell_mode": "area",
+      "color": "#f5d166",
+      "trial_note": "范围伤害，测试清杂兵和压基地的取舍。",
+      "task": {
+        "type": "linked_card_play_count",
+        "summary": "使用 3 次星屑群。",
+        "progress_label": "星屑群",
+        "watch_card_id": "spark_swarm",
+        "target": 3
+      },
+      "evolution": {
+        "id": "star_scatter",
+        "name": "星散",
+        "short_name": "散",
+        "summary": "范围半径扩大到 12。",
+        "overrides": {
+          "radius": 12.0
+        }
+      }
+    }
+  ]
+}

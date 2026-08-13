@@ -1,0 +1,498 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from datetime import date
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOOL_ROOT = Path(__file__).resolve().parent
+CARD_DATA_PATH = REPO_ROOT / "游戏工程" / "data" / "cards.json"
+DESIGNER_DOC_PATH = REPO_ROOT / "开发文档" / "设计" / "设计师文档.md"
+
+STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+}
+
+TASK_TYPE_LABELS = {
+    "card_play_count": "出牌计数",
+    "unit_hp_below_ratio": "单位血量阈值",
+    "card_kill_count": "同卡总击杀",
+    "card_play_burst": "窗口内出牌",
+    "single_unit_kill_count": "单个单位击杀",
+    "mana_reached": "法力阈值",
+    "base_hit_count": "基地命中计数",
+    "linked_card_play_count": "关联出牌计数",
+}
+
+
+def read_card_data() -> dict[str, Any]:
+    with CARD_DATA_PATH.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+    validate_card_data(data)
+    return data
+
+
+def save_card_data(data: dict[str, Any]) -> None:
+    validate_card_data(data)
+    data["updated_at"] = date.today().isoformat()
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    temp_path = CARD_DATA_PATH.with_suffix(".json.tmp")
+    temp_path.write_text(text, encoding="utf-8")
+    temp_path.replace(CARD_DATA_PATH)
+    DESIGNER_DOC_PATH.write_text(generate_designer_doc(data), encoding="utf-8")
+
+
+def validate_card_data(data: Any) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("根节点必须是 JSON object。")
+    cards = data.get("cards")
+    if not isinstance(cards, list) or not cards:
+        raise ValueError("cards 必须是非空数组。")
+
+    seen_ids: set[str] = set()
+    for index, card in enumerate(cards, start=1):
+        if not isinstance(card, dict):
+            raise ValueError(f"第 {index} 张卡必须是 object。")
+        card_id = str(card.get("id", "")).strip()
+        if not card_id:
+            raise ValueError(f"第 {index} 张卡缺少 id。")
+        if card_id in seen_ids:
+            raise ValueError(f"卡牌 id 重复：{card_id}")
+        seen_ids.add(card_id)
+
+        kind = card.get("kind")
+        if kind not in ("unit", "spell"):
+            raise ValueError(f"{card_id} 的 kind 必须是 unit 或 spell。")
+        require_text(card, "name", card_id)
+        require_text(card, "short_name", card_id)
+        require_number(card, "cost", card_id, minimum=0)
+        require_text(card, "role", card_id)
+        require_text(card, "trial_note", card_id)
+
+        if kind == "unit":
+            for field in ("count", "hp", "damage", "attack_cooldown", "range", "speed", "radius"):
+                require_number(card, field, card_id, minimum=0)
+            require_text(card, "shape", card_id)
+        else:
+            for field in ("damage", "base_damage", "radius"):
+                require_number(card, field, card_id, minimum=0)
+            require_text(card, "spell_mode", card_id)
+
+        task = card.get("task")
+        if not isinstance(task, dict):
+            raise ValueError(f"{card_id} 缺少 task object。")
+        require_text(task, "type", f"{card_id}.task")
+        require_text(task, "summary", f"{card_id}.task")
+        require_number(task, "target", f"{card_id}.task", minimum=0)
+
+        evolution = card.get("evolution")
+        if not isinstance(evolution, dict):
+            raise ValueError(f"{card_id} 缺少 evolution object。")
+        require_text(evolution, "id", f"{card_id}.evolution")
+        require_text(evolution, "name", f"{card_id}.evolution")
+        if not isinstance(evolution.get("overrides", {}), dict):
+            raise ValueError(f"{card_id}.evolution.overrides 必须是 object。")
+
+
+def require_text(source: dict[str, Any], field: str, label: str) -> None:
+    if str(source.get(field, "")).strip() == "":
+        raise ValueError(f"{label} 缺少 {field}。")
+
+
+def require_number(source: dict[str, Any], field: str, label: str, minimum: float | None = None) -> None:
+    value = source.get(field)
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"{label}.{field} 必须是数字。")
+    if minimum is not None and float(value) < minimum:
+        raise ValueError(f"{label}.{field} 不能小于 {minimum}。")
+
+
+def generate_designer_doc(data: dict[str, Any]) -> str:
+    rules = data.get("global_rules", {})
+    fields = data.get("field_definitions", {})
+    cards = data.get("cards", [])
+    radius_scale = float(rules.get("unit_radius_scale", 2.0))
+
+    lines: list[str] = [
+        "# 设计师文档",
+        "",
+        f"最后更新：{data.get('updated_at', date.today().isoformat())}",
+        "",
+        "本文件面向设计师，记录当前可读、可编辑的卡牌数值和规则说明。当前权威数据源已经迁移为 `游戏工程/data/cards.json`；本文件是由数值调校工具同步生成的设计师可读快照。",
+        "",
+        "## 数据源与工具",
+        "",
+        "- 权威卡牌数据：`游戏工程/data/cards.json`。",
+        "- Godot 读取入口：`游戏工程/scripts/v01/card_catalog.gd`，该脚本只负责读取 JSON 并把颜色等网页友好字段转换为 Godot 可用值。",
+        "- 设计师工具：`tools/balance_studio/`。启动方式见 `tools/balance_studio/README.md`。",
+        "- 协作者修改卡牌数值时，应优先使用工具或直接修改 JSON；不要再把 `card_catalog.gd` 当作数值表编辑。",
+        "- 工具保存时会同步刷新本文件；若手动改 JSON，也应运行工具保存一次或手动同步本文档。",
+        "",
+        "## 全局单位",
+        "",
+        f"- 地图长边：{fmt(rules.get('map_long_edge_logic_units', 100))} 个逻辑单位。",
+        f"- 生物实战半径倍率：{fmt(radius_scale)}；生物实战半径 = JSON 中的 `radius` × {fmt(radius_scale)}。",
+        f"- 法术范围半径不乘生物半径倍率。",
+        f"- 费用自然回复：每秒 {fmt(rules.get('mana_per_second', 0.5))} 点。",
+        f"- 费用上限：{fmt(rules.get('mana_max', 10))} 点。",
+        f"- 基地生命：{fmt(rules.get('base_hp', 300))} 点。",
+        "",
+        "## 字段说明",
+        "",
+        "| 字段 | 显示名 | 单位 | 适用 | 说明 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+
+    for key, definition in fields.items():
+        lines.append(
+            "| %s | %s | %s | %s | %s |"
+            % (
+                key,
+                definition.get("label", ""),
+                definition.get("unit", ""),
+                definition.get("applies_to", ""),
+                definition.get("notes", ""),
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 计算口径",
+            "",
+            "- 生物单体 DPS = `damage / attack_cooldown`。",
+            "- 生物整卡 DPS = `单体 DPS * count`；若进化后有 `multi_target_count`，工具会额外估算理想多目标 DPS。",
+            "- 生物总生命 = `hp * count`。",
+            "- 每费效率 = 对应指标 / `cost`。",
+            "- 从 0 费等待时间 = `cost / mana_per_second`。",
+            "- 法术覆盖面积 = `π * radius²`。",
+            "- 进化后指标按 `evolution.overrides` 覆盖基础卡字段后半自动计算。",
+        ]
+    )
+
+    unit_cards = [card for card in cards if card.get("kind") == "unit"]
+    spell_cards = [card for card in cards if card.get("kind") == "spell"]
+
+    lines.extend(
+        [
+            "",
+            "## 卡牌总表：生物",
+            "",
+            "| 卡牌 | 定位 | 费用 | 数量 | 生命 | 攻击力 | 攻击间隔 | 单体 DPS | 整卡 DPS | 总生命 | 射程 | 速度 | 基础半径 | 实战半径 | 目标规则 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for card in unit_cards:
+        single_dps = safe_div(card.get("damage", 0), card.get("attack_cooldown", 0))
+        card_dps = single_dps * float(card.get("count", 1))
+        total_hp = float(card.get("hp", 0)) * float(card.get("count", 1))
+        target_rule = "只攻击基地" if card.get("target_base_only") else "普通索敌"
+        if card.get("aoe_radius"):
+            target_rule += "，攻击附带范围伤害"
+        lines.append(
+            "| %s | %s | %s | %s | %s | %s | %s 秒 | %s | %s | %s | %s | %s | %s | %s | %s |"
+            % (
+                card.get("name", ""),
+                card.get("role", ""),
+                fmt(card.get("cost", 0)),
+                fmt(card.get("count", 0)),
+                fmt(card.get("hp", 0)),
+                fmt(card.get("damage", 0)),
+                fmt(card.get("attack_cooldown", 0)),
+                fmt(single_dps),
+                fmt(card_dps),
+                fmt(total_hp),
+                fmt(card.get("range", 0)),
+                fmt(card.get("speed", 0)),
+                fmt(card.get("radius", 0)),
+                fmt(float(card.get("radius", 0)) * radius_scale),
+                target_rule,
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 卡牌总表：法术",
+            "",
+            "| 卡牌 | 定位 | 费用 | 对单位伤害 | 对基地伤害 | 伤害/费 | 基地伤害/费 | 范围半径 | 覆盖面积 | 模式 | 说明 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        ]
+    )
+    for card in spell_cards:
+        radius = float(card.get("radius", 0))
+        area = math.pi * radius * radius
+        lines.append(
+            "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |"
+            % (
+                card.get("name", ""),
+                card.get("role", ""),
+                fmt(card.get("cost", 0)),
+                fmt(card.get("damage", 0)),
+                fmt(card.get("base_damage", 0)),
+                fmt(safe_div(card.get("damage", 0), card.get("cost", 0))),
+                fmt(safe_div(card.get("base_damage", 0), card.get("cost", 0))),
+                fmt(radius),
+                fmt(area),
+                card.get("spell_mode", ""),
+                card.get("trial_note", ""),
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## V0.2 任务与进化总表",
+            "",
+            "| 原卡 | 任务类型 | 默认任务 | 进化后 | 进化后规则 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+    )
+    for card in cards:
+        task = card.get("task", {})
+        evolution = card.get("evolution", {})
+        lines.append(
+            "| %s | %s | %s | %s | %s |"
+            % (
+                card.get("name", ""),
+                TASK_TYPE_LABELS.get(task.get("type", ""), task.get("type", "")),
+                task.get("summary", ""),
+                evolution.get("name", ""),
+                evolution.get("summary", ""),
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 进化指标提示",
+            "",
+            "| 原卡 | 进化后 | 主要指标变化 |",
+            "| --- | --- | --- |",
+        ]
+    )
+    for card in cards:
+        evolution = card.get("evolution", {})
+        lines.append(
+            "| %s | %s | %s |"
+            % (
+                card.get("name", ""),
+                evolution.get("name", ""),
+                evolution_metric_summary(card, rules),
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 当前卡牌说明",
+            "",
+        ]
+    )
+    for card in cards:
+        lines.extend(
+            [
+                f"### {card.get('name', '')}",
+                "",
+                f"- 用途：{card.get('trial_note', '')}",
+                f"- V0.2 任务：{card.get('task', {}).get('summary', '')}",
+                f"- V0.2 进化：{card.get('evolution', {}).get('name', '')}，{card.get('evolution', {}).get('summary', '')}",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "## V0.2 任务与进化规则",
+            "",
+            "- 8 张初版卡都会有任务和进化。",
+            "- 每张卡默认 1 个任务。",
+            "- V0.2 暂时不做局外任务配置部分。",
+            "- V0.2 进化先做 1 层。",
+            "- 任务进度仅在局内生效，不跨局保留。",
+            "- 任务完成后自动且不可避地进化到对应下一形态。",
+            "- 任务完成后只影响该卡后续使用；场上已经打出的单位保持生成时属性。",
+            "- 原型 UI：对局底部卡牌栏显示任务进度和“已进化”；结算统计显示双方任务完成数和进化数。",
+            "",
+            "## 调参记录",
+            "",
+            "- 当前工具 v0 会计算 DPS、总生命、每费效率、费用等待时间、法术覆盖面积等基础指标；设计师做出正式调参结论后，应在这里补充原因、预期结果和验收反馈。",
+            "",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def fmt(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(number - round(number)) < 0.005:
+        return str(int(round(number)))
+    return f"{number:.2f}".rstrip("0").rstrip(".")
+
+
+def safe_div(left: Any, right: Any) -> float:
+    try:
+        denominator = float(right)
+        if denominator == 0:
+            return 0.0
+        return float(left) / denominator
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def evolution_metric_summary(card: dict[str, Any], rules: dict[str, Any]) -> str:
+    evolved = apply_evolution(card)
+    before = card_metrics(card, rules)
+    after = card_metrics(evolved, rules)
+    parts: list[str] = []
+
+    for key, value in card.get("evolution", {}).get("overrides", {}).items():
+        parts.append(f"`{key}` {fmt(card.get(key, '未设置'))} → {fmt(value)}")
+
+    if card.get("kind") == "unit":
+        append_metric_delta(parts, "整卡 DPS", before.get("card_dps", 0), after.get("card_dps", 0))
+        append_metric_delta(parts, "总生命", before.get("total_hp", 0), after.get("total_hp", 0))
+        append_metric_delta(parts, "光环 DPS", before.get("aura_dps", 0), after.get("aura_dps", 0))
+    else:
+        append_metric_delta(parts, "伤害/费", before.get("damage_per_mana", 0), after.get("damage_per_mana", 0))
+        append_metric_delta(parts, "覆盖面积", before.get("coverage_area", 0), after.get("coverage_area", 0))
+
+    return "；".join(parts) + "。"
+
+
+def append_metric_delta(parts: list[str], label: str, before: float, after: float) -> None:
+    if abs(after - before) >= 0.005:
+        parts.append(f"{label} {fmt(before)} → {fmt(after)}")
+
+
+def apply_evolution(card: dict[str, Any]) -> dict[str, Any]:
+    evolved = dict(card)
+    evolution = card.get("evolution", {})
+    overrides = evolution.get("overrides", {}) if isinstance(evolution, dict) else {}
+    if isinstance(overrides, dict):
+        evolved.update(overrides)
+    return evolved
+
+
+def card_metrics(card: dict[str, Any], rules: dict[str, Any]) -> dict[str, float]:
+    cost = float(card.get("cost", 0) or 0)
+    if card.get("kind") == "unit":
+        cooldown = float(card.get("attack_cooldown", 0) or 0)
+        damage = float(card.get("damage", 0) or 0)
+        count = float(card.get("count", 1) or 1)
+        multi_target = max(float(card.get("multi_target_count", 1) or 1), 1.0)
+        single_dps = safe_div(damage, cooldown)
+        card_dps = single_dps * count * multi_target
+        aura_dps = safe_div(card.get("aura_damage", 0), card.get("aura_interval", 0))
+        return {
+            "single_dps": single_dps,
+            "card_dps": card_dps,
+            "total_hp": float(card.get("hp", 0) or 0) * count,
+            "dps_per_mana": safe_div(card_dps, cost),
+            "hp_per_mana": safe_div(float(card.get("hp", 0) or 0) * count, cost),
+            "aura_dps": aura_dps,
+        }
+
+    radius = float(card.get("radius", 0) or 0)
+    return {
+        "damage_per_mana": safe_div(card.get("damage", 0), cost),
+        "base_damage_per_mana": safe_div(card.get("base_damage", 0), cost),
+        "coverage_area": math.pi * radius * radius,
+    }
+
+
+class BalanceStudioHandler(BaseHTTPRequestHandler):
+    server_version = "ArcaneBalanceStudio/0.1"
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/api/cards":
+            self.write_json(
+                {
+                    "data": read_card_data(),
+                    "source_path": str(CARD_DATA_PATH.relative_to(REPO_ROOT)).replace("\\", "/"),
+                    "designer_doc_path": str(DESIGNER_DOC_PATH.relative_to(REPO_ROOT)).replace("\\", "/"),
+                }
+            )
+            return
+        if path == "/api/health":
+            self.write_json({"ok": True})
+            return
+        if path in STATIC_FILES:
+            filename, content_type = STATIC_FILES[path]
+            content = (TOOL_ROOT / filename).read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        self.send_error(404)
+
+    def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        if path != "/api/cards":
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 2_000_000:
+                raise ValueError("请求体过大。")
+            payload = self.rfile.read(length).decode("utf-8")
+            data = json.loads(payload)
+            save_card_data(data)
+            self.write_json(
+                {
+                    "ok": True,
+                    "updated_at": data.get("updated_at"),
+                    "source_path": str(CARD_DATA_PATH.relative_to(REPO_ROOT)).replace("\\", "/"),
+                    "designer_doc_path": str(DESIGNER_DOC_PATH.relative_to(REPO_ROOT)).replace("\\", "/"),
+                }
+            )
+        except Exception as exc:
+            self.write_json({"ok": False, "error": str(exc)}, status=400)
+
+    def write_json(self, payload: dict[str, Any], status: int = 200) -> None:
+        content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        print("%s - %s" % (self.address_string(), format % args))
+
+
+def run(preferred_port: int) -> None:
+    last_error: OSError | None = None
+    for port in range(preferred_port, preferred_port + 20):
+        try:
+            server = HTTPServer(("127.0.0.1", port), BalanceStudioHandler)
+        except OSError as exc:
+            last_error = exc
+            continue
+        print(f"Arcane Balance Studio: http://127.0.0.1:{port}")
+        server.serve_forever()
+        return
+    raise SystemExit(f"No available port near {preferred_port}: {last_error}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the Arcane Frontline balance tuning tool.")
+    parser.add_argument("--port", type=int, default=8765)
+    args = parser.parse_args()
+    run(args.port)
