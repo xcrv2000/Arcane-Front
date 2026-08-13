@@ -25,6 +25,9 @@ var selected_card_ids: Array[String] = []
 var selected_battle_card_id: String = ""
 var info_card_id: String = ""  # 当前显示详情的卡牌 id
 
+# V0.4 联机：断线判负时覆盖胜者显示（""=不覆盖，用 simulator.match_winner）
+var override_winner: String = ""
+
 
 # 注入依赖与卡牌数据。
 func setup(helpers_ref: RefCounted, sim: RefCounted, task_sys: RefCounted, card_list: Array[Dictionary]) -> void:
@@ -162,8 +165,8 @@ func _draw_battle_header(canvas: CanvasItem) -> void:
 	helpers.draw_panel(canvas, header, Color(0.10, 0.12, 0.15), 7.0, Color(0.20, 0.23, 0.28), 1.0)
 	var player_base: Dictionary = simulator.bases[Config.PLAYER]
 	var bot_base: Dictionary = simulator.bases[Config.BOT]
-	var left: String = "我方基地 %d/300  费 %.1f/10" % [int(ceil(float(player_base["hp"]))), simulator.player_mana]
-	var right: String = "Bot基地 %d/300  费 %.1f/10" % [int(ceil(float(bot_base["hp"]))), simulator.bot_mana]
+	var left: String = "我方基地 %d/300  费 %.1f/10" % [int(ceil(float(player_base["hp"]))), simulator.player_mana()]
+	var right: String = "Bot基地 %d/300  费 %.1f/10" % [int(ceil(float(bot_base["hp"]))), simulator.bot_mana()]
 	helpers.draw_text_line(canvas, left, Rect2(header.position + Vector2(12.0, 6.0), Vector2(header.size.x - 24.0, 18.0)), 15, Color(0.72, 0.88, 1.0), HORIZONTAL_ALIGNMENT_LEFT)
 	helpers.draw_text_line(canvas, right, Rect2(header.position + Vector2(12.0, 25.0), Vector2(header.size.x - 24.0, 18.0)), 15, Color(1.0, 0.72, 0.70), HORIZONTAL_ALIGNMENT_LEFT)
 	helpers.draw_text_line(canvas, "清屏 %d:%d" % [int(player_base["clear_count"]), int(bot_base["clear_count"])], Rect2(header.position + Vector2(0.0, 15.0), header.size), 15, Color(0.78, 0.82, 0.88), HORIZONTAL_ALIGNMENT_RIGHT)
@@ -220,16 +223,30 @@ func _draw_clock(canvas: CanvasItem) -> void:
 	var center: Vector2 = map_to_screen(Vector2(Config.MAP_WIDTH * 0.5, Config.RIVER_Y))
 	var clock_rect: Rect2 = Rect2(center - Vector2(42.0, 17.0), Vector2(84.0, 34.0))
 	helpers.draw_panel(canvas, clock_rect, Color(0.04, 0.06, 0.08, 0.88), 6.0, Color(0.52, 0.67, 0.78), 1.0)
-	helpers.draw_text_line(canvas, _format_time(simulator.battle_time), clock_rect, 19, Color(0.90, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, _format_time(simulator.battle_time()), clock_rect, 19, Color(0.90, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_spell_effect(canvas: CanvasItem, effect: Dictionary) -> void:
 	var alpha: float = clamp(float(effect["time"]) / float(effect["max_time"]), 0.0, 1.0)
 	var color: Color = effect["color"]
+	var F = preload("res://scripts/config/game_config.gd").FP_SCALE_F
+	var fp_from: Dictionary = effect.get("from_fp", {})
+	var fp_pos: Dictionary = effect.get("pos_fp", {})
+	var radius_fp: int = int(effect.get("radius_fp", int(float(effect.get("radius", 0.0)) * F + 0.5)))
+	var radius_logic: float = float(radius_fp) / F
+	var pos_logic: Vector2 = Vector2(
+		float(fp_pos.get("x", int(float(effect.get("pos", Vector2.ZERO).x) * F + 0.5))) / F,
+		float(fp_pos.get("y", int(float(effect.get("pos", Vector2.ZERO).y) * F + 0.5))) / F
+	)
+
 	if String(effect.get("mode", "circle")) == "line":
-		var start: Vector2 = map_to_screen(effect["from"])
-		var end: Vector2 = map_to_screen(effect["pos"])
-		var width: float = max(2.0, logic_to_pixels(float(effect["radius"]) * 2.0))
+		var from_logic: Vector2 = Vector2(
+			float(fp_from.get("x", int(float(effect.get("from", Vector2.ZERO).x) * F + 0.5))) / F,
+			float(fp_from.get("y", int(float(effect.get("from", Vector2.ZERO).y) * F + 0.5))) / F
+		)
+		var start: Vector2 = map_to_screen(from_logic)
+		var end: Vector2 = map_to_screen(pos_logic)
+		var width: float = max(2.0, logic_to_pixels(radius_logic * 2.0))
 		color.a = 0.16 * alpha
 		canvas.draw_line(start, end, color, width, true)
 		color.a = 0.82 * alpha
@@ -238,8 +255,8 @@ func _draw_spell_effect(canvas: CanvasItem, effect: Dictionary) -> void:
 		helpers.draw_text_line(canvas, effect["label"], Rect2(end - Vector2(24.0, 12.0), Vector2(48.0, 24.0)), 16, Color(1.0, 0.96, 0.78, alpha), HORIZONTAL_ALIGNMENT_CENTER)
 		return
 	color.a = 0.22 * alpha
-	var center: Vector2 = map_to_screen(effect["pos"])
-	var radius: float = logic_to_pixels(float(effect["radius"]))
+	var center: Vector2 = map_to_screen(pos_logic)
+	var radius: float = logic_to_pixels(radius_logic)
 	canvas.draw_circle(center, radius, color)
 	color.a = 0.75 * alpha
 	canvas.draw_circle(center, radius, color, false, 2.0)
@@ -247,8 +264,13 @@ func _draw_spell_effect(canvas: CanvasItem, effect: Dictionary) -> void:
 
 
 func _draw_unit(canvas: CanvasItem, unit: Dictionary) -> void:
-	var center: Vector2 = map_to_screen(unit["pos"])
-	var radius: float = logic_to_pixels(float(unit["radius"]))
+	var F: float = preload("res://scripts/config/game_config.gd").FP_SCALE_F
+	var pos_fp: Dictionary = unit.get("pos_fp", {"x": 0, "y": 0})
+	var pos_logic: Vector2 = Vector2(float(int(pos_fp.get("x", 0))) / F, float(int(pos_fp.get("y", 0))) / F)
+	var radius_fp: int = int(unit.get("radius_fp", int(float(unit.get("radius", 0.0)) * F + 0.5)))
+	var radius_logic: float = float(radius_fp) / F
+	var center: Vector2 = map_to_screen(pos_logic)
+	var radius: float = logic_to_pixels(radius_logic)
 	var side: String = String(unit["side"])
 	var fill: Color = unit["color"]
 	if side == Config.BOT:
@@ -290,14 +312,14 @@ func _draw_battle_card_bar(canvas: CanvasItem) -> void:
 
 func _draw_mana_bar(canvas: CanvasItem, rect: Rect2) -> void:
 	canvas.draw_rect(rect, Color(0.05, 0.06, 0.08))
-	canvas.draw_rect(Rect2(rect.position, Vector2(rect.size.x * simulator.player_mana / Config.MANA_MAX, rect.size.y)), Color(0.22, 0.56, 0.92))
+	canvas.draw_rect(Rect2(rect.position, Vector2(rect.size.x * simulator.player_mana() / Config.MANA_MAX, rect.size.y)), Color(0.22, 0.56, 0.92))
 	for tick in range(int(Config.MANA_MAX) + 1):
 		var x: float = rect.position.x + rect.size.x * float(tick) / Config.MANA_MAX
 		canvas.draw_line(Vector2(x, rect.position.y), Vector2(x, rect.end.y), Color(0.95, 0.96, 1.0, 0.18), 1.0)
 
 
 func _draw_battle_card(canvas: CanvasItem, base_card: Dictionary, card: Dictionary, rect: Rect2, selected: bool) -> void:
-	var affordable: bool = simulator.player_mana >= float(card["cost"])
+	var affordable: bool = simulator.player_mana() >= float(card["cost"])
 	var bg: Color = Color(0.14, 0.17, 0.21) if affordable else Color(0.09, 0.10, 0.12)
 	if selected:
 		bg = Color(0.18, 0.30, 0.38)
@@ -407,10 +429,14 @@ func draw_result_overlay(canvas: CanvasItem) -> void:
 	var panel_height: float = 360.0
 	var panel: Rect2 = Rect2(Vector2((view_size.x - panel_width) * 0.5, (view_size.y - panel_height) * 0.5), Vector2(panel_width, panel_height))
 	helpers.draw_panel(canvas, panel, Color(0.11, 0.13, 0.16), 8.0, Color(0.38, 0.46, 0.55), 2.0)
-	helpers.draw_text_line(canvas, "%s胜利" % MapMath.side_name(simulator.match_winner), Rect2(panel.position + Vector2(18.0, 16.0), Vector2(panel.size.x - 36.0, 28.0)), 25, Color(0.94, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "用时 %s；单位阵亡 %d；法术施放 %d" % [_format_time(simulator.battle_time), int(simulator.stats["units_lost"]), int(simulator.stats["spell_casts"])], Rect2(panel.position + Vector2(18.0, 48.0), Vector2(panel.size.x - 36.0, 20.0)), 14, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	var winner: String = override_winner if override_winner != "" else simulator.match_winner
+	helpers.draw_text_line(canvas, "%s胜利" % MapMath.side_name(winner), Rect2(panel.position + Vector2(18.0, 16.0), Vector2(panel.size.x - 36.0, 28.0)), 25, Color(0.94, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "用时 %s；单位阵亡 %d；法术施放 %d" % [_format_time(simulator.battle_time()), int(simulator.stats["units_lost"]), int(simulator.stats["spell_casts"])], Rect2(panel.position + Vector2(18.0, 48.0), Vector2(panel.size.x - 36.0, 20.0)), 14, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_text_line(canvas, "清屏次数 我方 %d / Bot %d" % [int(simulator.bases[Config.PLAYER]["clear_count"]), int(simulator.bases[Config.BOT]["clear_count"])], Rect2(panel.position + Vector2(18.0, 72.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "耗费 我方 %.0f / Bot %.0f" % [float(simulator.stats["player_spent"]), float(simulator.stats["bot_spent"])], Rect2(panel.position + Vector2(18.0, 94.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	var spent_fp_f: float = preload("res://scripts/config/game_config.gd").FP_SCALE_F
+	var p_spent: float = float(int(simulator.stats.get("player_spent_fp", simulator.stats.get("player_spent", 0)))) / spent_fp_f
+	var b_spent: float = float(int(simulator.stats.get("bot_spent_fp", simulator.stats.get("bot_spent", 0)))) / spent_fp_f
+	helpers.draw_text_line(canvas, "耗费 我方 %.0f / Bot %.0f" % [p_spent, b_spent], Rect2(panel.position + Vector2(18.0, 94.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_text_line(canvas, "任务 我方 %d / Bot %d；进化 我方 %d / Bot %d" % [int(simulator.stats.get("player_tasks_completed", 0)), int(simulator.stats.get("bot_tasks_completed", 0)), int(simulator.stats.get("player_evolutions", 0)), int(simulator.stats.get("bot_evolutions", 0))], Rect2(panel.position + Vector2(18.0, 116.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 
 	# 卡牌详情列表
@@ -422,7 +448,7 @@ func draw_result_overlay(canvas: CanvasItem) -> void:
 		var state: Dictionary = task_system.task_state(Config.PLAYER, card_id)
 		var play_count: int = int(state.get("play_count", 0))
 		var evolved: bool = bool(state.get("evolved", false))
-		var completed_time: float = float(state.get("completed_at_time", -1.0))
+		var completed_time: float = state.get("completed_at_time", -1.0)
 		var line: String = "%s" % String(base_card["name"])
 		if play_count > 0:
 			line += " · 使用%d次" % play_count
