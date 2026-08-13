@@ -180,12 +180,12 @@
       "cost": 4,
       "count": 1,
       "hp": 128.0,
-      "damage": 18.0,
-      "attack_cooldown": 1.45,
-      "range": 1.8,
+      "damage": 25.0,
+      "attack_cooldown": 1.8,
+      "range": 1.5,
       "speed": 4.4,
       "radius": 1.15,
-      "aoe_radius": 3.4,
+      "multi_target_count": 20,
       "shape": "triangle",
       "color": "#edb35e",
       "trial_note": "近战范围伤害，测试反杂兵能力。",
@@ -201,10 +201,10 @@
         "id": "wheel_blade",
         "name": "轮刃兵",
         "short_name": "轮",
-        "summary": "攻击间隔减少到 1.2 秒，射程提升到 3。",
+        "summary": "攻击间隔减少到 1.4 秒，射程提升到 2.5。",
         "overrides": {
-          "attack_cooldown": 1.2,
-          "range": 3.0
+          "attack_cooldown": 1.4,
+          "range": 2.5
         }
       }
     },
