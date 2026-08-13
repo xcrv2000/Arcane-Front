@@ -59,6 +59,7 @@ func _process(delta: float) -> void:
 	bot_brain.update(delta, simulator, task_system)
 	simulator.update_units(delta)
 	simulator.update_spell_effects(delta)
+	simulator.update_evolution_flashes(delta)
 	if screen_mode == ScreenMode.BATTLE and not simulator.running:
 		screen_mode = ScreenMode.RESULT
 	queue_redraw()
@@ -69,6 +70,44 @@ func _gui_input(event: InputEvent) -> void:
 		_handle_press(event.position)
 	elif event is InputEventScreenTouch and event.pressed:
 		_handle_press(event.position)
+
+
+func _input(event: InputEvent) -> void:
+	if screen_mode != ScreenMode.BATTLE:
+		return
+	if not (event is InputEventKey and event.pressed):
+		return
+
+	var keycode: Key = event.keycode
+	match keycode:
+		KEY_EQUAL, KEY_PLUS:
+			simulator.player_mana = min(Config.MANA_MAX, simulator.player_mana + 2.0)
+			simulator.push_event("调试：费用 +2")
+		KEY_MINUS:
+			simulator.player_mana = max(0.0, simulator.player_mana - 2.0)
+			simulator.push_event("调试：费用 -2")
+		KEY_T:
+			if selected_battle_card_id != "":
+				task_system.force_complete_task(Config.PLAYER, selected_battle_card_id)
+				simulator.push_event("调试：强制完成 %s 任务" % selected_battle_card_id)
+		KEY_R:
+			_start_battle()
+		KEY_D:
+			bot_brain.set_use_random_deck(not bot_brain.use_random_deck)
+			simulator.push_event("调试：Bot 牌组模式 → %s" % ("随机" if bot_brain.use_random_deck else "固定"))
+		KEY_S:
+			simulator.rng.seed = simulator.rng.randi()
+			simulator.push_event("调试：随机种子已重置")
+		KEY_F:
+			_toggle_debug_overlay()
+
+
+var show_debug_overlay: bool = true
+
+
+func _toggle_debug_overlay() -> void:
+	show_debug_overlay = not show_debug_overlay
+	simulator.push_event("调试：调试面板 %s" % ("显示" if show_debug_overlay else "隐藏"))
 
 
 func _handle_press(position: Vector2) -> void:
@@ -106,6 +145,7 @@ func _handle_battle_press(position: Vector2) -> void:
 		var card_id: String = String(raw_card_id)
 		if painter.battle_card_rects[card_id].has_point(position):
 			selected_battle_card_id = card_id
+			painter.info_card_id = card_id
 			var card: Dictionary = task_system.active_card_by_id(Config.PLAYER, card_id)
 			if simulator.player_mana < float(card["cost"]):
 				simulator.push_event("%s 费用不足。" % card["name"])
@@ -131,10 +171,11 @@ func _toggle_card_selection(card_id: String) -> void:
 func _start_battle() -> void:
 	screen_mode = ScreenMode.BATTLE
 	selected_battle_card_id = selected_card_ids[0]
-	task_system.initialize(selected_card_ids, Config.BOT_DECK_IDS)
-	simulator.start_battle()
+	painter.info_card_id = selected_card_ids[0]
 	bot_brain.reset()
-	simulator.push_event("V0.2 对局开始：任务完成后卡牌自动进化。")
+	task_system.initialize(selected_card_ids, bot_brain.current_deck())
+	simulator.start_battle()
+	simulator.push_event("V0.3 对局开始：任务完成后卡牌自动进化。Bot 卡组：%s" % ", ".join(bot_brain.current_deck()))
 	queue_redraw()
 
 
@@ -147,5 +188,7 @@ func _draw() -> void:
 		painter.draw_deck_select(self)
 	else:
 		painter.draw_battle(self)
+		if show_debug_overlay and screen_mode == ScreenMode.BATTLE:
+			painter.draw_debug_overlay(self, bot_brain.current_deck(), simulator.rng.seed)
 		if screen_mode == ScreenMode.RESULT:
 			painter.draw_result_overlay(self)

@@ -15,7 +15,7 @@ static func all_cards() -> Array[Dictionary]:
 			"attack_cooldown": 0.85,
 			"range": 1.4,
 			"speed": 7.0,
-			"radius": 0.75,
+			"radius": 0.55,
 			"shape": "circle",
 			"color": Color(0.45, 0.83, 0.86),
 			"trial_note": "低费多数量，测试场面铺开速度。",

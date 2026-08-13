@@ -23,6 +23,7 @@ var deck_rect: Rect2 = Rect2()
 # 控制器在选卡/出牌时同步更新这两个字段，供绘制读取。
 var selected_card_ids: Array[String] = []
 var selected_battle_card_id: String = ""
+var info_card_id: String = ""  # 当前显示详情的卡牌 id
 
 
 # 注入依赖与卡牌数据。
@@ -150,6 +151,7 @@ func draw_battle(canvas: CanvasItem) -> void:
 	battle_card_rects.clear()
 	_draw_battle_header(canvas)
 	_draw_map(canvas)
+	_draw_card_info_panel(canvas)
 	_draw_battle_card_bar(canvas)
 	_draw_event_log(canvas)
 
@@ -299,24 +301,102 @@ func _draw_battle_card(canvas: CanvasItem, base_card: Dictionary, card: Dictiona
 	var bg: Color = Color(0.14, 0.17, 0.21) if affordable else Color(0.09, 0.10, 0.12)
 	if selected:
 		bg = Color(0.18, 0.30, 0.38)
-	helpers.draw_panel(canvas, rect, bg, 7.0, Color(0.48, 0.78, 0.94) if selected else Color(0.24, 0.27, 0.32), 2.0 if selected else 1.0)
-	var icon_center: Vector2 = rect.position + Vector2(rect.size.x * 0.5, 24.0)
+	var flashing: bool = simulator.is_evolution_flashing(Config.PLAYER, String(base_card["id"]))
+	var border_color: Color = Color(0.48, 0.78, 0.94) if selected else Color(0.24, 0.27, 0.32)
+	var border_width: float = 2.0 if selected else 1.0
+	if flashing:
+		bg = Color(0.22, 0.34, 0.22)
+		border_color = Color(0.47, 0.92, 0.72)
+		border_width = 3.0
+	helpers.draw_panel(canvas, rect, bg, 7.0, border_color, border_width)
+	var icon_center: Vector2 = rect.position + Vector2(rect.size.x * 0.5, 22.0)
 	if not helpers.draw_card_art_icon(canvas, card, icon_center, 34.0, Color.WHITE if affordable else Color(0.42, 0.44, 0.46)):
 		helpers.draw_unit_shape(canvas, card, icon_center, 12.0, card["color"] if affordable else Color(0.30, 0.32, 0.34), Color(0.04, 0.05, 0.07), String(card["short_name"]), 16)
-	helpers.draw_text_line(canvas, card["name"], Rect2(rect.position + Vector2(3.0, 42.0), Vector2(rect.size.x - 6.0, 18.0)), 12, Color(0.92, 0.94, 0.96) if affordable else Color(0.46, 0.49, 0.54), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "%d费" % int(card["cost"]), Rect2(rect.position + Vector2(3.0, 60.0), Vector2(rect.size.x - 6.0, 15.0)), 12, Color(0.70, 0.84, 1.0) if affordable else Color(0.42, 0.46, 0.52), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, task_system.task_progress_text(Config.PLAYER, String(base_card["id"])), Rect2(rect.position + Vector2(3.0, 74.0), Vector2(rect.size.x - 6.0, 13.0)), 10, Color(0.90, 0.76, 0.46) if not bool(card.get("evolved", false)) else Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, card["name"], Rect2(rect.position + Vector2(3.0, 38.0), Vector2(rect.size.x - 6.0, 16.0)), 11, Color(0.92, 0.94, 0.96) if affordable else Color(0.46, 0.49, 0.54), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "%d费" % int(card["cost"]), Rect2(rect.position + Vector2(3.0, 54.0), Vector2(rect.size.x - 6.0, 13.0)), 11, Color(0.70, 0.84, 1.0) if affordable else Color(0.42, 0.46, 0.52), HORIZONTAL_ALIGNMENT_CENTER)
+
+	# 任务进度条：底部显示，已进化变绿。
+	var progress_ratio: float = task_system.task_progress_ratio(Config.PLAYER, String(base_card["id"]))
+	var bar_x: float = rect.position.x + 4.0
+	var bar_y: float = rect.position.y + rect.size.y - 12.0
+	var bar_w: float = rect.size.x - 8.0
+	var bar_h: float = 6.0
+	canvas.draw_rect(Rect2(bar_x, bar_y, bar_w, bar_h), Color(0.04, 0.05, 0.06))
+	if bool(card.get("evolved", false)):
+		canvas.draw_rect(Rect2(bar_x, bar_y, bar_w, bar_h), Color(0.28, 0.76, 0.42))
+	else:
+		canvas.draw_rect(Rect2(bar_x, bar_y, bar_w * progress_ratio, bar_h), Color(0.86, 0.66, 0.30) if affordable else Color(0.40, 0.36, 0.22))
+	helpers.draw_text_line(canvas, task_system.task_progress_text(Config.PLAYER, String(base_card["id"])), Rect2(rect.position + Vector2(3.0, 68.0), Vector2(rect.size.x - 6.0, 12.0)), 9, Color(0.90, 0.76, 0.46) if not bool(card.get("evolved", false)) else Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_event_log(canvas: CanvasItem) -> void:
-	var log_rect: Rect2 = Rect2(14.0, board_rect.end.y + 8.0, view_size.x - 28.0, max(0.0, view_size.y - board_rect.end.y - 180.0))
-	if log_rect.size.y < 22.0:
+	var log_rect: Rect2 = Rect2(14.0, board_rect.end.y + 8.0, view_size.x - 28.0, max(0.0, view_size.y - board_rect.end.y - 260.0))
+	if log_rect.size.y < 20.0:
 		return
 	helpers.draw_panel(canvas, log_rect, Color(0.06, 0.07, 0.09, 0.72), 7.0, Color(0.20, 0.23, 0.27), 1.0)
-	var line_y: float = log_rect.position.y + 6.0
+	var line_y: float = log_rect.position.y + 4.0
 	for index in range(simulator.event_log.size()):
-		helpers.draw_text_line(canvas, simulator.event_log[index], Rect2(log_rect.position.x + 8.0, line_y, log_rect.size.x - 16.0, 17.0), 12, Color(0.72, 0.77, 0.84), HORIZONTAL_ALIGNMENT_LEFT)
-		line_y += 17.0
+		helpers.draw_text_line(canvas, simulator.event_log[index], Rect2(log_rect.position.x + 8.0, line_y, log_rect.size.x - 16.0, 16.0), 11, Color(0.72, 0.77, 0.84), HORIZONTAL_ALIGNMENT_LEFT)
+		line_y += 16.0
+
+
+# 选中卡牌详情面板：显示任务条件与进化效果。
+func _draw_card_info_panel(canvas: CanvasItem) -> void:
+	if selected_battle_card_id == "":
+		return
+
+	var card_id: String = selected_battle_card_id
+	var base_card: Dictionary = task_system.card_by_id(card_id)
+	var card: Dictionary = task_system.active_card_by_id(Config.PLAYER, card_id)
+	if base_card.size() == 0 or card.size() == 0:
+		return
+
+	var panel_top: float = board_rect.end.y + 8.0
+	var panel_height: float = 92.0
+	var panel: Rect2 = Rect2(14.0, panel_top, view_size.x - 28.0, panel_height)
+	helpers.draw_panel(canvas, panel, Color(0.10, 0.12, 0.15, 0.92), 7.0, Color(0.30, 0.34, 0.40), 1.0)
+
+	# 左：卡牌名、费用、角色
+	var left_rect: Rect2 = Rect2(panel.position + Vector2(10.0, 6.0), Vector2(160.0, panel.size.y - 12.0))
+	helpers.draw_text_line(canvas, card["name"], Rect2(left_rect.position, Vector2(left_rect.size.x, 20.0)), 15, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_LEFT)
+	helpers.draw_text_line(canvas, "%s  ·  %d费  ·  %s" % [card["role"], int(card["cost"]), "已进化" if bool(card.get("evolved", false)) else "未进化"], Rect2(left_rect.position + Vector2(0.0, 22.0), Vector2(left_rect.size.x, 16.0)), 12, Color(0.68, 0.74, 0.80), HORIZONTAL_ALIGNMENT_LEFT)
+
+	# 中：任务描述
+	var task: Dictionary = base_card.get("task", {})
+	var task_rect: Rect2 = Rect2(panel.position + Vector2(175.0, 6.0), Vector2(panel.size.x - 350.0, panel.size.y * 0.5 - 4.0))
+	if task.size() > 0:
+		var task_summary: String = String(task.get("summary", ""))
+		helpers.draw_text_line(canvas, "任务：%s" % task_summary, task_rect, 12, Color(0.86, 0.72, 0.42), HORIZONTAL_ALIGNMENT_LEFT)
+		var state: Dictionary = task_system.task_state(Config.PLAYER, card_id)
+		var progress_text: String = task_system.task_progress_text(Config.PLAYER, card_id)
+		helpers.draw_text_line(canvas, "进度：%s" % progress_text, Rect2(task_rect.position + Vector2(0.0, 18.0), Vector2(task_rect.size.x, 16.0)), 12, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_LEFT)
+
+	# 右：进化效果
+	var evolution: Dictionary = base_card.get("evolution", {})
+	var evo_rect: Rect2 = Rect2(panel.position + Vector2(panel.size.x - 175.0, 6.0), Vector2(165.0, panel.size.y - 12.0))
+	if evolution.size() > 0:
+		var evo_name: String = String(evolution.get("name", ""))
+		var evo_summary: String = String(evolution.get("summary", ""))
+		helpers.draw_text_line(canvas, "进化 → %s" % evo_name, Rect2(evo_rect.position, Vector2(evo_rect.size.x, 20.0)), 13, Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_LEFT)
+		helpers.draw_two_line_text(canvas, evo_summary, Rect2(evo_rect.position + Vector2(0.0, 22.0), Vector2(evo_rect.size.x, panel.size.y - 30.0)), 11, Color(0.66, 0.72, 0.78))
+	else:
+		helpers.draw_text_line(canvas, "无进化", evo_rect, 13, Color(0.45, 0.48, 0.52), HORIZONTAL_ALIGNMENT_LEFT)
+
+
+# 调试覆盖层：显示快捷键提示与 Bot 卡组信息。
+func draw_debug_overlay(canvas: CanvasItem, bot_deck: Array[String], rng_seed: int) -> void:
+	var help_lines: Array[String] = [
+		"[+/-] 费用增减  [T] 强制完成任务  [R] 重开",
+		"[D] Bot随机/固定  [S] 重置种子  [F] 隐藏面板",
+		"Bot: %s" % ", ".join(bot_deck),
+		"种子: %d" % rng_seed
+	]
+	var line_h: float = 14.0
+	var panel_h: float = help_lines.size() * line_h + 10.0
+	var panel: Rect2 = Rect2(12.0, board_rect.position.y + 70.0, 200.0, panel_h)
+	helpers.draw_panel(canvas, panel, Color(0.04, 0.05, 0.06, 0.80), 5.0, Color(0.30, 0.34, 0.40), 1.0)
+	for index in range(help_lines.size()):
+		helpers.draw_text_line(canvas, help_lines[index], Rect2(panel.position + Vector2(8.0, 4.0 + index * line_h), Vector2(panel.size.x - 16.0, line_h)), 10, Color(0.68, 0.74, 0.82), HORIZONTAL_ALIGNMENT_LEFT)
 
 
 # —— 结算覆盖层 ——
@@ -324,14 +404,40 @@ func draw_result_overlay(canvas: CanvasItem) -> void:
 	var overlay: Rect2 = Rect2(Vector2.ZERO, view_size)
 	canvas.draw_rect(overlay, Color(0.02, 0.025, 0.035, 0.74))
 	var panel_width: float = min(view_size.x - 36.0, 440.0)
-	var panel_height: float = 286.0
+	var panel_height: float = 360.0
 	var panel: Rect2 = Rect2(Vector2((view_size.x - panel_width) * 0.5, (view_size.y - panel_height) * 0.5), Vector2(panel_width, panel_height))
 	helpers.draw_panel(canvas, panel, Color(0.11, 0.13, 0.16), 8.0, Color(0.38, 0.46, 0.55), 2.0)
-	helpers.draw_text_line(canvas, "%s胜利" % MapMath.side_name(simulator.match_winner), Rect2(panel.position + Vector2(18.0, 20.0), Vector2(panel.size.x - 36.0, 30.0)), 25, Color(0.94, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "用时 %s；单位阵亡 %d；法术施放 %d" % [_format_time(simulator.battle_time), int(simulator.stats["units_lost"]), int(simulator.stats["spell_casts"])], Rect2(panel.position + Vector2(18.0, 62.0), Vector2(panel.size.x - 36.0, 22.0)), 15, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "清屏次数 我方 %d / Bot %d" % [int(simulator.bases[Config.PLAYER]["clear_count"]), int(simulator.bases[Config.BOT]["clear_count"])], Rect2(panel.position + Vector2(18.0, 92.0), Vector2(panel.size.x - 36.0, 22.0)), 15, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "耗费 我方 %.0f / Bot %.0f" % [float(simulator.stats["player_spent"]), float(simulator.stats["bot_spent"])], Rect2(panel.position + Vector2(18.0, 120.0), Vector2(panel.size.x - 36.0, 22.0)), 15, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "任务 我方 %d / Bot %d；进化 我方 %d / Bot %d" % [int(simulator.stats.get("player_tasks_completed", 0)), int(simulator.stats.get("bot_tasks_completed", 0)), int(simulator.stats.get("player_evolutions", 0)), int(simulator.stats.get("bot_evolutions", 0))], Rect2(panel.position + Vector2(18.0, 148.0), Vector2(panel.size.x - 36.0, 22.0)), 15, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "%s胜利" % MapMath.side_name(simulator.match_winner), Rect2(panel.position + Vector2(18.0, 16.0), Vector2(panel.size.x - 36.0, 28.0)), 25, Color(0.94, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "用时 %s；单位阵亡 %d；法术施放 %d" % [_format_time(simulator.battle_time), int(simulator.stats["units_lost"]), int(simulator.stats["spell_casts"])], Rect2(panel.position + Vector2(18.0, 48.0), Vector2(panel.size.x - 36.0, 20.0)), 14, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "清屏次数 我方 %d / Bot %d" % [int(simulator.bases[Config.PLAYER]["clear_count"]), int(simulator.bases[Config.BOT]["clear_count"])], Rect2(panel.position + Vector2(18.0, 72.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "耗费 我方 %.0f / Bot %.0f" % [float(simulator.stats["player_spent"]), float(simulator.stats["bot_spent"])], Rect2(panel.position + Vector2(18.0, 94.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "任务 我方 %d / Bot %d；进化 我方 %d / Bot %d" % [int(simulator.stats.get("player_tasks_completed", 0)), int(simulator.stats.get("bot_tasks_completed", 0)), int(simulator.stats.get("player_evolutions", 0)), int(simulator.stats.get("bot_evolutions", 0))], Rect2(panel.position + Vector2(18.0, 116.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+
+	# 卡牌详情列表
+	var list_top: float = panel.position.y + 142.0
+	var list_height: float = panel.size.y - 206.0
+	var card_lines: Array[String] = []
+	for card_id in selected_card_ids:
+		var base_card: Dictionary = task_system.card_by_id(card_id)
+		var state: Dictionary = task_system.task_state(Config.PLAYER, card_id)
+		var play_count: int = int(state.get("play_count", 0))
+		var evolved: bool = bool(state.get("evolved", false))
+		var completed_time: float = float(state.get("completed_at_time", -1.0))
+		var line: String = "%s" % String(base_card["name"])
+		if play_count > 0:
+			line += " · 使用%d次" % play_count
+		if evolved:
+			line += " · 进化于%s" % _format_time(completed_time)
+		elif bool(state.get("completed", false)):
+			line += " · 完成于%s(无进化)" % _format_time(completed_time)
+		else:
+			line += " · 未完成"
+		card_lines.append(line)
+
+	var line_y: float = list_top
+	for text in card_lines:
+		helpers.draw_text_line(canvas, text, Rect2(panel.position + Vector2(18.0, line_y), Vector2(panel.size.x - 36.0, 16.0)), 11, Color(0.78, 0.84, 0.90) if not text.find("进化") >= 0 else Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_LEFT)
+		line_y += 16.0
 
 	restart_rect = Rect2(panel.position + Vector2(24.0, panel.size.y - 78.0), Vector2((panel.size.x - 58.0) * 0.5, 48.0))
 	deck_rect = Rect2(Vector2(restart_rect.end.x + 10.0, restart_rect.position.y), restart_rect.size)

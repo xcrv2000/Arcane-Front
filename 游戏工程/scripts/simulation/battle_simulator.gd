@@ -25,6 +25,7 @@ var match_winner: String = ""
 var running: bool = false
 var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var task_system: RefCounted = null  # TaskSystem 引用，运行时由控制器注入
+var evolution_flashes: Dictionary = {}  # side → {card_id → remaining_flash_time}
 
 
 func _init() -> void:
@@ -47,6 +48,7 @@ func start_battle() -> void:
 	event_log.clear()
 	match_winner = ""
 	running = true
+	evolution_flashes = {}
 	bases = {
 		Config.PLAYER: {
 			"hp": Config.BASE_MAX_HP,
@@ -232,7 +234,7 @@ func _cast_line_spell(side: String, card: Dictionary, target_position: Vector2) 
 	push_event("%s 施放 %s，路径命中 %d。" % [MapMath.side_name(side), card["name"], hit_count])
 
 
-# 每帧更新所有单位：光环、索敌、攻击或移动、清理阵亡单位。
+# 每帧更新所有单位：光环、索敌、攻击或移动、碰撞分离、清理阵亡单位。
 func update_units(delta: float) -> void:
 	for unit in units:
 		if unit["hp"] <= 0.0:
@@ -256,6 +258,8 @@ func update_units(delta: float) -> void:
 		else:
 			_move_unit_toward(unit, _next_step_goal(unit, target_position), delta)
 
+	_separate_units()
+
 	var alive_units: Array[Dictionary] = []
 	for unit in units:
 		if unit["hp"] > 0.0:
@@ -263,6 +267,41 @@ func update_units(delta: float) -> void:
 		else:
 			stats["units_lost"] += 1
 	units = alive_units
+
+
+# 碰撞分离：推开所有互相重叠的单位（同阵营与敌方都分离，避免重叠）。
+func _separate_units() -> void:
+	var alive_count: int = 0
+	for unit in units:
+		if float(unit["hp"]) > 0.0:
+			alive_count += 1
+
+	for i in range(alive_count):
+		var unit_a: Dictionary = units[i]
+		if float(unit_a["hp"]) <= 0.0:
+			continue
+		var pos_a: Vector2 = unit_a["pos"]
+		var radius_a: float = float(unit_a["radius"])
+
+		for j in range(i + 1, alive_count):
+			var unit_b: Dictionary = units[j]
+			if float(unit_b["hp"]) <= 0.0:
+				continue
+			var pos_b: Vector2 = unit_b["pos"]
+			var radius_b: float = float(unit_b["radius"])
+
+			var delta_pos: Vector2 = pos_a - pos_b
+			var dist: float = delta_pos.length()
+			var min_dist: float = radius_a + radius_b
+			if dist >= min_dist or dist <= 0.001:
+				continue
+
+			var overlap: float = min_dist - dist
+			var direction: Vector2 = delta_pos.normalized()
+			# 双方各推一半，向相反方向分离。
+			var push: Vector2 = direction * overlap * 0.5
+			unit_a["pos"] = pos_a + push
+			unit_b["pos"] = pos_b - push
 
 
 # 为单位寻找攻击目标：优先仇敌范围内的敌方单位，否则目标为基地。
@@ -372,20 +411,23 @@ func _next_step_goal(unit: Dictionary, target_position: Vector2) -> Vector2:
 
 
 # 向基地推进时的分段路径目标（先到桥、过河、再到基地）。
+# 路径点始终越过边界，避免浮点精度导致的"卡在路径点"问题。
 func _path_goal_toward_base(unit: Dictionary) -> Vector2:
 	var position: Vector2 = unit["pos"]
 	var bridge_x: float = MapMath.nearest_bridge_x(position.x)
 	if unit["side"] == Config.PLAYER:
-		if position.y > Config.RIVER_Y + 3.0:
-			return Vector2(bridge_x, Config.RIVER_Y + 2.0)
-		if position.y > Config.RIVER_Y - 3.0:
-			return Vector2(bridge_x, Config.RIVER_Y - 3.0)
+		# 向北推进：先到桥南入口，再到桥北出口（越过 y=47 边界），最后到基地。
+		if position.y >= Config.RIVER_Y + 3.0:
+			return Vector2(bridge_x, Config.RIVER_Y + 1.5)
+		if position.y >= Config.RIVER_Y - 3.0:
+			return Vector2(bridge_x, Config.RIVER_Y - 4.5)
 		return MapMath.base_position(Config.BOT)
 
-	if position.y < Config.RIVER_Y - 3.0:
-		return Vector2(bridge_x, Config.RIVER_Y - 2.0)
-	if position.y < Config.RIVER_Y + 3.0:
-		return Vector2(bridge_x, Config.RIVER_Y + 3.0)
+	# 向南推进：先到桥北入口，再到桥南出口（越过 y=53 边界），最后到基地。
+	if position.y <= Config.RIVER_Y - 3.0:
+		return Vector2(bridge_x, Config.RIVER_Y - 1.5)
+	if position.y <= Config.RIVER_Y + 3.0:
+		return Vector2(bridge_x, Config.RIVER_Y + 4.5)
 	return MapMath.base_position(Config.PLAYER)
 
 
@@ -525,13 +567,17 @@ func _record_card_use(side: String, card_id: String) -> void:
 	task_system.track_card_play(side, card_id)
 
 
-# 任务完成时由 TaskSystem 回调：累计任务/进化统计。
-func record_task_completed(side: String, evolved: bool) -> void:
+# 任务完成时由 TaskSystem 回调：累计任务/进化统计，触发进化闪光。
+func record_task_completed(side: String, evolved: bool, card_id: String = "") -> void:
 	var task_key: String = "player_tasks_completed" if side == Config.PLAYER else "bot_tasks_completed"
 	stats[task_key] = int(stats.get(task_key, 0)) + 1
 	if evolved:
 		var evolution_key: String = "player_evolutions" if side == Config.PLAYER else "bot_evolutions"
 		stats[evolution_key] = int(stats.get(evolution_key, 0)) + 1
+		if card_id != "":
+			if not evolution_flashes.has(side):
+				evolution_flashes[side] = {}
+			evolution_flashes[side][card_id] = 2.0
 
 
 # 追加一条事件日志，保留最近 6 条。
@@ -539,6 +585,25 @@ func push_event(message: String) -> void:
 	event_log.append(message)
 	while event_log.size() > 6:
 		event_log.pop_front()
+
+
+# 每帧衰减进化闪光计时器。
+func update_evolution_flashes(delta: float) -> void:
+	for side in evolution_flashes.keys():
+		var side_flashes: Dictionary = evolution_flashes[side]
+		var remaining: Dictionary = {}
+		for card_id in side_flashes.keys():
+			var time_left: float = float(side_flashes[card_id]) - delta
+			if time_left > 0.0:
+				remaining[card_id] = time_left
+		evolution_flashes[side] = remaining
+
+
+# 查询某张卡是否处于进化闪光状态。
+func is_evolution_flashing(side: String, card_id: String) -> bool:
+	if not evolution_flashes.has(side):
+		return false
+	return evolution_flashes[side].has(card_id)
 
 
 # 格式化秒为 mm:ss。

@@ -52,7 +52,9 @@ func _add_task_state(side: String, card_id: String) -> void:
 		"completed": false,
 		"evolved": false,
 		"recent_uses": [],
-		"unit_kills": {}
+		"unit_kills": {},
+		"play_count": 0,
+		"completed_at_time": -1.0
 	}
 
 
@@ -140,6 +142,12 @@ func track_card_play(side: String, played_card_id: String) -> void:
 	if not task_states.has(side):
 		return
 	var side_tasks: Dictionary = task_states[side]
+	# 记录该卡使用次数（供结算读取）。
+	if side_tasks.has(played_card_id):
+		var state: Dictionary = side_tasks[played_card_id]
+		state["play_count"] = int(state.get("play_count", 0)) + 1
+		side_tasks[played_card_id] = state
+
 	for raw_card_id in side_tasks.keys():
 		var card_id: String = String(raw_card_id)
 		var state: Dictionary = side_tasks[card_id]
@@ -264,9 +272,40 @@ func _complete_task(side: String, card_id: String) -> void:
 	state["completed"] = true
 	state["evolved"] = evolution.size() > 0
 	state["progress"] = float(task.get("target", state.get("progress", 0.0)))
+	state["completed_at_time"] = simulator.battle_time
 	side_tasks[card_id] = state
-	simulator.record_task_completed(side, evolution.size() > 0)
+	simulator.record_task_completed(side, evolution.size() > 0, card_id)
 	if evolution.size() > 0:
 		simulator.push_event("%s完成%s任务，进化为%s。" % [MapMath.side_name(side), card["name"], evolution["name"]])
 	else:
 		simulator.push_event("%s完成%s任务。" % [MapMath.side_name(side), card["name"]])
+
+
+# 强制完成某张卡的任务（供调试工具使用）。
+func force_complete_task(side: String, card_id: String) -> void:
+	if not task_states.has(side):
+		return
+	var side_tasks: Dictionary = task_states[side]
+	if not side_tasks.has(card_id):
+		return
+	var state: Dictionary = side_tasks[card_id]
+	if bool(state.get("completed", false)):
+		return
+	var card: Dictionary = card_by_id(card_id)
+	var task: Dictionary = card.get("task", {})
+	_set_task_progress(side, card_id, float(task.get("target", 1.0)))
+
+
+# 返回某张卡当前任务进度比例（0.0~1.0），供进度条显示。
+func task_progress_ratio(side: String, card_id: String) -> float:
+	var state: Dictionary = task_state(side, card_id)
+	var card: Dictionary = card_by_id(card_id)
+	if state.size() == 0 or card.size() == 0 or not card.has("task"):
+		return 0.0
+	var task: Dictionary = card["task"]
+	var target: float = float(task.get("target", 1.0))
+	if target <= 0.0:
+		return 0.0
+	if bool(state.get("completed", false)):
+		return 1.0
+	return clamp(float(state.get("progress", 0.0)) / target, 0.0, 1.0)

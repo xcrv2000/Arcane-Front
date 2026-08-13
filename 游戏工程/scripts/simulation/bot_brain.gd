@@ -1,19 +1,43 @@
 # Bot AI：脚本对手的出牌决策。
-# 当前为 V0.1 trial 固定节奏策略：按固定牌组顺序循环出牌，费用不足则跳过。
+# V0.3：支持随机从卡池选 6 张、法术/单位混合出牌、可切换固定牌组。
 # 出牌与玩家共用 BattleSimulator.try_play_card 入口，便于未来替换为联机输入源。
 extends RefCounted
 
 const Config = preload("res://scripts/config/game_config.gd")
 const MapMath = preload("res://scripts/support/map_math.gd")
+const CardCatalog = preload("res://scripts/v01/card_catalog.gd")
 
+var bot_deck_ids: Array[String] = []  # 当前 Bot 使用的 6 张卡 id
 var bot_play_cursor: int = 0
 var bot_think_timer: float = 0.0
+var use_random_deck: bool = true  # true=随机选 6 张；false=使用固定牌组
+var selected_random_ids: Array[String] = []  # 随机选中的卡牌
+var deck_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
 # 对局开始时重置 Bot 状态。
 func reset() -> void:
 	bot_play_cursor = 0
 	bot_think_timer = 1.2
+	if use_random_deck:
+		_select_random_deck()
+	else:
+		bot_deck_ids = Config.BOT_DECK_IDS.duplicate()
+	selected_random_ids = bot_deck_ids.duplicate()
+
+
+# 从全卡池中随机选 6 张不同的卡。
+func _select_random_deck() -> void:
+	var all_ids: Array[String] = []
+	for card in CardCatalog.all_cards():
+		all_ids.append(String(card["id"]))
+	bot_deck_ids.clear()
+	var pool: Array[String] = all_ids.duplicate()
+	deck_rng.seed = Time.get_ticks_msec()
+	while bot_deck_ids.size() < min(6, pool.size()):
+		var index: int = deck_rng.randi() % pool.size()
+		bot_deck_ids.append(pool[index])
+		pool.remove_at(index)
 
 
 # 每帧推进 Bot 思考计时器，到点尝试出一张可负担的卡。
@@ -23,8 +47,8 @@ func update(delta: float, simulator: RefCounted, task_system: RefCounted) -> voi
 		return
 
 	var attempts: int = 0
-	while attempts < Config.BOT_DECK_IDS.size():
-		var card_id: String = Config.BOT_DECK_IDS[bot_play_cursor % Config.BOT_DECK_IDS.size()]
+	while attempts < bot_deck_ids.size():
+		var card_id: String = bot_deck_ids[bot_play_cursor % bot_deck_ids.size()]
 		bot_play_cursor += 1
 		attempts += 1
 		var card: Dictionary = task_system.active_card_by_id(Config.BOT, card_id)
@@ -50,3 +74,13 @@ func _choose_bot_position(card: Dictionary, simulator: RefCounted) -> Vector2:
 		clamp(lane_x + simulator.rng.randf_range(-4.0, 4.0), 5.0, Config.MAP_WIDTH - 5.0),
 		simulator.rng.randf_range(11.0, Config.BOT_DEPLOY_MAX_Y)
 	)
+
+
+# 切换 Bot 牌组模式（供控制器/调试工具调用）。
+func set_use_random_deck(enabled: bool) -> void:
+	use_random_deck = enabled
+
+
+# 获取当前 Bot 牌组（供调试显示）。
+func current_deck() -> Array[String]:
+	return bot_deck_ids
