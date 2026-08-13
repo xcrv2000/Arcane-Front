@@ -17,13 +17,18 @@ const LockstepScheduler = preload("res://scripts/networking/lockstep_scheduler.g
 const Command = preload("res://scripts/networking/command.gd")
 const Fp = preload("res://scripts/support/fp_math.gd")
 const NetworkClient = preload("res://scripts/networking/network_client.gd")
+const DECK_SAVE_PATH: String = "user://selected_deck.json"
+const CARD_HOTKEYS: Array[Key] = [KEY_Q, KEY_W, KEY_E, KEY_A, KEY_S, KEY_D]
 
-enum ScreenMode { DECK_SELECT, ROOM_SETUP, ROOM_WAIT, BATTLE, RESULT }
+enum ScreenMode { MAIN_MENU, COMPENDIUM, DECK_BUILDER, ROOM_SETUP, ROOM_WAIT, BATTLE, RESULT }
 
-var screen_mode: int = ScreenMode.DECK_SELECT
+var screen_mode: int = ScreenMode.MAIN_MENU
 var cards: Array[Dictionary] = []
 var selected_card_ids: Array[String] = []
+var saved_deck_ids: Array[String] = []
 var selected_battle_card_id: String = ""
+var compendium_card_id: String = ""
+var frontend_status_text: String = ""
 
 var helpers: CanvasHelpers
 var simulator: BattleSimulator
@@ -52,7 +57,6 @@ var disconnect_countdown: float = -1.0  # -1=未启动；>0=倒计时中（秒�
 
 # —— 房间/联机按钮（按屏幕尺寸动态计算位置，不用改 UIPainter）——
 var online_create_rect: Rect2 = Rect2()
-var online_join_rect: Rect2 = Rect2()
 var join_input_rect: Rect2 = Rect2()
 var room_ready_rect: Rect2 = Rect2()
 var room_leave_rect: Rect2 = Rect2()
@@ -75,11 +79,64 @@ func _ready() -> void:
 	scheduler = LockstepScheduler.new()
 	scheduler.strict_wait = false  # 本地模式，不等待网络
 	scheduler.sides = [Config.PLAYER, Config.BOT]
-	for index in range(min(Config.CARD_PICK_COUNT, cards.size())):
-		selected_card_ids.append(cards[index]["id"])
+	_load_saved_deck()
+	selected_card_ids = saved_deck_ids.duplicate()
+	if not cards.is_empty():
+		compendium_card_id = String(cards[0]["id"])
 	# 初始化网络客户端（需要一个 Node 挂定时器做帧轮询）
 	_init_networking()
 	queue_redraw()
+
+
+# 牌组存档只有一个“当前牌组”。读取时会过滤不存在/重复的卡牌；无有效存档则使用卡池前 6 张。
+func _load_saved_deck() -> void:
+	saved_deck_ids = _default_deck_ids()
+	if not FileAccess.file_exists(DECK_SAVE_PATH):
+		return
+	var raw: String = FileAccess.get_file_as_string(DECK_SAVE_PATH)
+	var parsed: Variant = JSON.parse_string(raw)
+	if not (parsed is Dictionary):
+		frontend_status_text = "牌组存档无法读取，已使用默认牌组。"
+		return
+	var candidate: Array[String] = []
+	var seen: Dictionary = {}
+	var known: Dictionary = {}
+	for card in cards:
+		known[String(card.get("id", ""))] = true
+	for raw_id in parsed.get("selected_card_ids", []):
+		var card_id: String = String(raw_id)
+		if known.has(card_id) and not seen.has(card_id):
+			candidate.append(card_id)
+			seen[card_id] = true
+	if candidate.size() == Config.CARD_PICK_COUNT:
+		saved_deck_ids = candidate
+	else:
+		frontend_status_text = "牌组存档不完整，已使用默认牌组。"
+
+
+func _default_deck_ids() -> Array[String]:
+	var result: Array[String] = []
+	for index in range(min(Config.CARD_PICK_COUNT, cards.size())):
+		result.append(String(cards[index]["id"]))
+	return result
+
+
+func _save_current_deck() -> bool:
+	if selected_card_ids.size() != Config.CARD_PICK_COUNT:
+		frontend_status_text = "需要恰好选择 %d 张卡才能保存。" % Config.CARD_PICK_COUNT
+		return false
+	var file: FileAccess = FileAccess.open(DECK_SAVE_PATH, FileAccess.WRITE)
+	if file == null:
+		frontend_status_text = "保存牌组失败（错误码 %d）。" % FileAccess.get_open_error()
+		return false
+	saved_deck_ids = selected_card_ids.duplicate()
+	file.store_string(JSON.stringify({
+		"schema_version": 1,
+		"selected_card_ids": saved_deck_ids
+	}, "\t"))
+	file.close()
+	frontend_status_text = "牌组已保存，单机与联机将使用这 6 张卡。"
+	return true
 
 
 # —— 网络初始化：挂信号 + 用 self（Control Node）做轮询宿主
@@ -261,10 +318,14 @@ func _input(event: InputEvent) -> void:
 				return
 	if screen_mode != ScreenMode.BATTLE:
 		return
-	if not (event is InputEventKey and event.pressed):
+	if not (event is InputEventKey and event.pressed) or event.echo:
 		return
 
 	var keycode: Key = event.keycode
+	var hotkey_index: int = CARD_HOTKEYS.find(keycode)
+	if hotkey_index >= 0:
+		_select_battle_card_by_index(hotkey_index)
+		return
 	match keycode:
 		KEY_EQUAL, KEY_PLUS:
 			var mana_max_fp: int = int(Config.MANA_MAX * Config.FP_SCALE_F + 0.5)
@@ -275,14 +336,15 @@ func _input(event: InputEvent) -> void:
 			simulator.push_event("调试：费用 -2")
 		KEY_T:
 			if selected_battle_card_id != "":
-				task_system.force_complete_task(Config.PLAYER, selected_battle_card_id)
+				task_system.force_complete_task(_controlled_game_side(), selected_battle_card_id)
 				simulator.push_event("调试：强制完成 %s 任务" % selected_battle_card_id)
 		KEY_R:
-			_start_battle()
-		KEY_D:
+			if not online_mode:
+				_start_battle()
+		KEY_B:
 			bot_brain.set_use_random_deck(not bot_brain.use_random_deck)
 			simulator.push_event("调试：Bot 牌组模式 → %s" % ("随机" if bot_brain.use_random_deck else "固定"))
-		KEY_S:
+		KEY_Y:
 			var new_seed: int = simulator.rng.randi()
 			simulator.set_shared_seed(new_seed)
 			simulator.push_event("调试：随机种子已重置为 %d" % new_seed)
@@ -291,6 +353,24 @@ func _input(event: InputEvent) -> void:
 		KEY_ESCAPE:
 			if online_mode:
 				_leave_room()
+
+
+func _select_battle_card_by_index(index: int) -> void:
+	if index < 0 or index >= selected_card_ids.size():
+		return
+	selected_battle_card_id = selected_card_ids[index]
+	painter.info_card_id = selected_battle_card_id
+	var side: String = _controlled_game_side()
+	var card: Dictionary = task_system.active_card_by_id(side, selected_battle_card_id)
+	var mana_fp: int = simulator.player_mana_fp if side == Config.PLAYER else simulator.bot_mana_fp
+	var cost_fp: int = int(float(card.get("cost", 0.0)) * Config.FP_SCALE_F + 0.5)
+	if mana_fp < cost_fp:
+		simulator.push_event("%s 费用不足。" % String(card.get("name", selected_battle_card_id)))
+	queue_redraw()
+
+
+func _controlled_game_side() -> String:
+	return my_game_side if online_mode else Config.PLAYER
 
 
 var show_debug_overlay: bool = true
@@ -302,10 +382,15 @@ func _toggle_debug_overlay() -> void:
 
 
 func _handle_press(position: Vector2) -> void:
-	painter.update_layout(size, screen_mode == ScreenMode.DECK_SELECT)
+	var is_frontend: bool = screen_mode != ScreenMode.BATTLE and screen_mode != ScreenMode.RESULT
+	painter.update_layout(size, is_frontend)
 	_recompute_online_rects()
-	if screen_mode == ScreenMode.DECK_SELECT:
-		_handle_deck_press(position)
+	if screen_mode == ScreenMode.MAIN_MENU:
+		_handle_main_menu_press(position)
+	elif screen_mode == ScreenMode.COMPENDIUM:
+		_handle_compendium_press(position)
+	elif screen_mode == ScreenMode.DECK_BUILDER:
+		_handle_deck_builder_press(position)
 	elif screen_mode == ScreenMode.ROOM_SETUP:
 		_handle_room_setup_press(position)
 	elif screen_mode == ScreenMode.ROOM_WAIT:
@@ -314,6 +399,8 @@ func _handle_press(position: Vector2) -> void:
 		_handle_battle_press(position)
 	elif screen_mode == ScreenMode.RESULT:
 		if painter.restart_rect.has_point(position):
+			if online_mode:
+				_leave_room()
 			_start_battle()
 		elif painter.deck_rect.has_point(position):
 			_leave_room()
@@ -322,29 +409,20 @@ func _handle_press(position: Vector2) -> void:
 func _recompute_online_rects() -> void:
 	var w: float = size.x
 	var h: float = size.y
-	# 卡组选择界面底部：三个按钮（左=创建房间，中=加入，右=本地开始）
-	var btn_row_y: float = h - 68.0
-	var btn_h: float = 42.0
-	var btn_w: float = 210.0
-	var gap: float = 14.0
-	var total: float = btn_w * 3.0 + gap * 2.0
-	var start_x: float = (w - total) * 0.5
-	online_create_rect = Rect2(start_x, btn_row_y, btn_w, btn_h)
-	online_join_rect = Rect2(start_x + btn_w + gap, btn_row_y, btn_w, btn_h)
-	# 加入房间输入框（ROOM_SETUP 里使用）
-	var box_w: float = 460.0
-	join_input_rect = Rect2(Vector2(w * 0.5 - box_w * 0.5, h * 0.5 - 70.0), Vector2(box_w, 52.0))
-	join_submit_rect = Rect2(Vector2(w * 0.5 + 16.0, h * 0.5 + 0.0), Vector2(200.0, 42.0))
-	room_setup_back_rect = Rect2(Vector2(w * 0.5 - 216.0, h * 0.5 + 0.0), Vector2(200.0, 42.0))
+	var box_w: float = min(460.0, w - 64.0)
+	join_input_rect = Rect2(Vector2(w * 0.5 - box_w * 0.5, h * 0.5 - 84.0), Vector2(box_w, 54.0))
+	join_submit_rect = Rect2(Vector2(w * 0.5 - box_w * 0.5, h * 0.5 - 18.0), Vector2(box_w, 48.0))
+	online_create_rect = Rect2(Vector2(w * 0.5 - box_w * 0.5, h * 0.5 + 92.0), Vector2(box_w, 52.0))
+	room_setup_back_rect = Rect2(Vector2(22.0, 22.0), Vector2(112.0, 44.0))
 	# 房间等待界面：准备/离开
 	room_ready_rect = Rect2(Vector2(w * 0.5 - 220.0, h * 0.5 + 60.0), Vector2(200.0, 48.0))
 	room_leave_rect = Rect2(Vector2(w * 0.5 + 20.0, h * 0.5 + 60.0), Vector2(200.0, 48.0))
 
 
 func _handle_room_setup_press(pos: Vector2) -> void:
-	# ROOM_SETUP：输入框激活（用 click 切换 focus；不做真实输入框：用 OS 剪贴板 / 或逐字符追加——这里简单做法：只允许点击提交（已有 join_input_text 由外部设置）。
-	# 为了让用户能输入：用简单字符拦截——我们通过 _input(event) 里的 InputEventKey 处理字符写入 join_input_text
-	if join_submit_rect.has_point(pos):
+	if online_create_rect.has_point(pos):
+		_try_create_room()
+	elif join_submit_rect.has_point(pos):
 		# 提交加入请求
 		var txt: String = join_input_text.strip_edges().to_upper()
 		if txt.length() < 4:
@@ -363,29 +441,65 @@ func _handle_room_wait_press(pos: Vector2) -> void:
 		_leave_room()
 
 
-func _handle_deck_press(position: Vector2) -> void:
-	for raw_card_id in painter.card_pick_rects.keys():
+func _handle_main_menu_press(position: Vector2) -> void:
+	if painter.main_menu_rects.get("single", Rect2()).has_point(position):
+		selected_card_ids = saved_deck_ids.duplicate()
+		online_mode = false
+		_start_battle()
+	elif painter.main_menu_rects.get("online", Rect2()).has_point(position):
+		selected_card_ids = saved_deck_ids.duplicate()
+		screen_mode = ScreenMode.ROOM_SETUP
+		online_status_text = ""
+		join_input_text = ""
+		queue_redraw()
+	elif painter.main_menu_rects.get("compendium", Rect2()).has_point(position):
+		screen_mode = ScreenMode.COMPENDIUM
+		frontend_status_text = ""
+		queue_redraw()
+	elif painter.main_menu_rects.get("deck", Rect2()).has_point(position):
+		selected_card_ids = saved_deck_ids.duplicate()
+		screen_mode = ScreenMode.DECK_BUILDER
+		frontend_status_text = ""
+		queue_redraw()
+
+
+func _handle_compendium_press(position: Vector2) -> void:
+	if painter.back_rect.has_point(position):
+		screen_mode = ScreenMode.MAIN_MENU
+		queue_redraw()
+		return
+	for raw_card_id in painter.repository_card_rects.keys():
 		var card_id: String = String(raw_card_id)
-		if painter.card_pick_rects[card_id].has_point(position):
-			_toggle_card_selection(card_id)
+		if painter.repository_card_rects[card_id].has_point(position):
+			compendium_card_id = card_id
 			queue_redraw()
 			return
 
-	if online_create_rect.has_point(position):
-		_try_create_room()
-	elif online_join_rect.has_point(position):
-		# 切换到房间输入界面，让用户键入房间码
-		screen_mode = ScreenMode.ROOM_SETUP
-		online_status_text = "键入或粘贴 4 位房间码（回车/点击提交发送，Esc 返回）"
-		join_input_text = ""
+
+func _handle_deck_builder_press(position: Vector2) -> void:
+	if painter.back_rect.has_point(position):
+		selected_card_ids = saved_deck_ids.duplicate()
+		screen_mode = ScreenMode.MAIN_MENU
+		frontend_status_text = ""
 		queue_redraw()
-	elif painter.start_rect.has_point(position):
-		if selected_card_ids.size() == Config.CARD_PICK_COUNT:
-			online_mode = false
-			_start_battle()
-		else:
-			simulator.push_event("需要选择 6 张卡。")
+		return
+	if painter.save_deck_rect.has_point(position):
+		_save_current_deck()
+		queue_redraw()
+		return
+	for raw_card_id in painter.deck_slot_rects.keys():
+		var card_id: String = String(raw_card_id)
+		if painter.deck_slot_rects[card_id].has_point(position):
+			selected_card_ids.erase(card_id)
+			frontend_status_text = "已移出 %s；保存后生效。" % _card_name(card_id)
 			queue_redraw()
+			return
+	for raw_card_id in painter.repository_card_rects.keys():
+		var card_id: String = String(raw_card_id)
+		if painter.repository_card_rects[card_id].has_point(position):
+			_toggle_card_selection(card_id)
+			queue_redraw()
+			return
 
 
 func _handle_battle_press(position: Vector2) -> void:
@@ -394,9 +508,11 @@ func _handle_battle_press(position: Vector2) -> void:
 		if painter.battle_card_rects[card_id].has_point(position):
 			selected_battle_card_id = card_id
 			painter.info_card_id = card_id
-			var card: Dictionary = task_system.active_card_by_id(Config.PLAYER, card_id)
+			var side: String = _controlled_game_side()
+			var card: Dictionary = task_system.active_card_by_id(side, card_id)
 			var cost_fp: int = int(float(card["cost"]) * Config.FP_SCALE_F + 0.5)
-			if simulator.player_mana_fp < cost_fp:
+			var mana_fp: int = simulator.player_mana_fp if side == Config.PLAYER else simulator.bot_mana_fp
+			if mana_fp < cost_fp:
 				simulator.push_event("%s 费用不足。" % card["name"])
 			queue_redraw()
 			return
@@ -426,13 +542,29 @@ func _handle_battle_press(position: Vector2) -> void:
 func _toggle_card_selection(card_id: String) -> void:
 	if selected_card_ids.has(card_id):
 		selected_card_ids.erase(card_id)
+		frontend_status_text = "已移出 %s；保存后生效。" % _card_name(card_id)
 	elif selected_card_ids.size() < Config.CARD_PICK_COUNT:
 		selected_card_ids.append(card_id)
+		frontend_status_text = "已加入 %s（%d/%d）；保存后生效。" % [_card_name(card_id), selected_card_ids.size(), Config.CARD_PICK_COUNT]
 	else:
-		simulator.push_event("单局仍只能携带 6 张卡。")
+		frontend_status_text = "牌组已满；请先移出一张卡。"
+
+
+func _card_name(card_id: String) -> String:
+	for card in cards:
+		if String(card.get("id", "")) == card_id:
+			return String(card.get("name", card_id))
+	return card_id
 
 
 func _start_battle() -> void:
+	if selected_card_ids.size() != Config.CARD_PICK_COUNT:
+		selected_card_ids = saved_deck_ids.duplicate()
+	if selected_card_ids.is_empty():
+		frontend_status_text = "当前没有可用牌组。"
+		screen_mode = ScreenMode.MAIN_MENU
+		queue_redraw()
+		return
 	screen_mode = ScreenMode.BATTLE
 	selected_battle_card_id = selected_card_ids[0]
 	painter.info_card_id = selected_card_ids[0]
@@ -440,6 +572,7 @@ func _start_battle() -> void:
 	scheduler.reset()
 	scheduler.strict_wait = false  # 本地模式不等待
 	scheduler.sides = [Config.PLAYER, Config.BOT]
+	painter.controlled_side = Config.PLAYER
 	bot_brain.reset()
 	task_system.initialize(selected_card_ids, bot_brain.current_deck())
 	simulator.start_battle()
@@ -449,21 +582,22 @@ func _start_battle() -> void:
 
 
 func _draw() -> void:
-	painter.update_layout(size, screen_mode == ScreenMode.DECK_SELECT)
+	var is_frontend: bool = screen_mode != ScreenMode.BATTLE and screen_mode != ScreenMode.RESULT
+	painter.update_layout(size, is_frontend)
 	_recompute_online_rects()
 	painter.selected_card_ids = selected_card_ids
 	painter.selected_battle_card_id = selected_battle_card_id
 	painter.draw_background(self)
-	if screen_mode == ScreenMode.DECK_SELECT:
-		painter.draw_deck_select(self)
-		_draw_deck_online_buttons()
-		_draw_status_banner()
+	if screen_mode == ScreenMode.MAIN_MENU:
+		painter.draw_main_menu(self, saved_deck_ids, frontend_status_text)
+	elif screen_mode == ScreenMode.COMPENDIUM:
+		painter.draw_compendium(self, compendium_card_id)
+	elif screen_mode == ScreenMode.DECK_BUILDER:
+		painter.draw_deck_builder(self, selected_card_ids, frontend_status_text)
 	elif screen_mode == ScreenMode.ROOM_SETUP:
-		painter.draw_deck_select(self)
 		_draw_room_setup()
 		_draw_status_banner()
 	elif screen_mode == ScreenMode.ROOM_WAIT:
-		painter.draw_deck_select(self)
 		_draw_room_wait()
 		_draw_status_banner()
 	else:
@@ -506,21 +640,16 @@ func _draw_disconnect_countdown() -> void:
 	helpers.draw_text_line(self, "等待 %d 秒后判负（%s）" % [int(ceilf(disconnect_countdown)), room_code], Rect2(panel.position + Vector2(14.0, 44.0), Vector2(panel.size.x - 28.0, 18.0)), 13, Color(0.90, 0.80, 0.70), HORIZONTAL_ALIGNMENT_CENTER)
 
 
-# —— 卡组选择界面底部按钮（联机+本地）
-func _draw_deck_online_buttons() -> void:
-	var ok_cnt: bool = selected_card_ids.size() == Config.CARD_PICK_COUNT
-	_draw_button(online_create_rect, "① 创建联机房间", ok_cnt, Color(0.30, 0.55, 0.92), Color(0.20, 0.24, 0.34))
-	_draw_button(online_join_rect, "② 输入房间码加入", ok_cnt, Color(0.30, 0.72, 0.52), Color(0.20, 0.34, 0.28))
-
-
-# —— ROOM_SETUP：输入 4 位房间码
+# —— ROOM_SETUP：选择创建房间，或输入 4 位房间码加入
 func _draw_room_setup() -> void:
 	var w: float = size.x
 	var h: float = size.y
-	var title: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 160.0), Vector2(w - 80.0, 40.0))
-	helpers.draw_text_line(self, "加入房间", title, 28, Color(0.94, 0.86, 0.60), HORIZONTAL_ALIGNMENT_CENTER)
-	var hint: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 110.0), Vector2(w - 80.0, 20.0))
-	helpers.draw_text_line(self, "请键入或粘贴 4 位房间码（字母+数字，不含0/O/1/I）", hint, 13, Color(0.78, 0.74, 0.66), HORIZONTAL_ALIGNMENT_CENTER)
+	var title: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 250.0), Vector2(w - 80.0, 42.0))
+	helpers.draw_text_line(self, "联机对战", title, 30, Color(0.94, 0.86, 0.60), HORIZONTAL_ALIGNMENT_CENTER)
+	var deck_hint: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 202.0), Vector2(w - 80.0, 22.0))
+	helpers.draw_text_line(self, "使用当前已保存牌组（%d/%d）" % [saved_deck_ids.size(), Config.CARD_PICK_COUNT], deck_hint, 14, Color(0.70, 0.77, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	var hint: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 126.0), Vector2(w - 80.0, 20.0))
+	helpers.draw_text_line(self, "输入房间码加入（字母+数字，不含 0/O/1/I）", hint, 13, Color(0.78, 0.74, 0.66), HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_panel(self, join_input_rect, Color(0.06, 0.08, 0.12, 0.96), 6.0, Color(0.70, 0.80, 0.96), 1.5)
 	var text: String = join_input_text
 	if text == "":
@@ -530,9 +659,12 @@ func _draw_room_setup() -> void:
 	else:
 		var c: Color = Color(0.96, 0.90, 0.68)
 		helpers.draw_text_line(self, text, Rect2(join_input_rect.position + Vector2(16.0, 16.0), Vector2(join_input_rect.size.x - 32.0, 20.0)), 22, c, HORIZONTAL_ALIGNMENT_CENTER)
-	_draw_button(room_setup_back_rect, "← 返回卡组", true, Color(0.50, 0.50, 0.60), Color(0.20, 0.22, 0.28))
+	_draw_button(room_setup_back_rect, "返回", true, Color(0.50, 0.50, 0.60), Color(0.20, 0.22, 0.28))
 	var ready_active: bool = join_input_text.strip_edges().length() >= 4
-	_draw_button(join_submit_rect, "提交并加入 →", ready_active, Color(0.30, 0.72, 0.52), Color(0.20, 0.34, 0.28))
+	_draw_button(join_submit_rect, "加入房间", ready_active, Color(0.30, 0.72, 0.52), Color(0.20, 0.34, 0.28))
+	var separator: Rect2 = Rect2(Vector2(40.0, h * 0.5 + 48.0), Vector2(w - 80.0, 22.0))
+	helpers.draw_text_line(self, "或", separator, 13, Color(0.48, 0.54, 0.62), HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_button(online_create_rect, "创建新房间", saved_deck_ids.size() == Config.CARD_PICK_COUNT, Color(0.30, 0.55, 0.92), Color(0.20, 0.24, 0.34))
 
 
 # —— ROOM_WAIT：显示房间码、双方准备按钮
@@ -583,7 +715,7 @@ func _on_connected() -> void:
 
 
 func _on_conn_fail(reason: String) -> void:
-	online_status_text = "连接失败：%s（点击返回卡组）" % reason
+	online_status_text = "连接失败：%s（点击返回主界面）" % reason
 	room_code = ""
 	my_ready = false
 	peer_ready = false
@@ -779,7 +911,9 @@ func _leave_room() -> void:
 	scheduler.sides = [Config.PLAYER, Config.BOT]
 	disconnect_countdown = -1.0
 	painter.override_winner = ""
-	screen_mode = ScreenMode.DECK_SELECT
+	painter.controlled_side = Config.PLAYER
+	selected_card_ids = saved_deck_ids.duplicate()
+	screen_mode = ScreenMode.MAIN_MENU
 	online_status_text = ""
 	queue_redraw()
 
@@ -798,7 +932,9 @@ func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> v
 	scheduler.reset()
 	task_system.initialize(player_ids, bot_ids)
 	simulator.start_battle()
-	selected_battle_card_id = player_ids[0] if player_ids.size() > 0 else ""
+	selected_card_ids = my_deck.duplicate()
+	selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""
+	painter.controlled_side = my_game_side
 	painter.info_card_id = selected_battle_card_id
 	last_issued_checksum_tick = -1
 	screen_mode = ScreenMode.BATTLE
