@@ -1,10 +1,11 @@
-# UI 绘制与布局层：负责所有屏幕绘制（选卡、战场、结算）与屏幕/逻辑坐标换算。
+# UI 绘制与布局层：负责所有屏幕绘制（主界面、图鉴、牌组、战场、结算）与屏幕/逻辑坐标换算。
 # 拥有布局矩形缓存（供控制器做点击命中测试），但不处理输入逻辑本身。
 # 依赖：CanvasHelpers（低层绘制原语与单位美术）、BattleSimulator/TaskSystem（读取对局状态）。
 extends RefCounted
 
 const Config = preload("res://scripts/config/game_config.gd")
 const MapMath = preload("res://scripts/support/map_math.gd")
+const CARD_HOTKEY_LABELS: Array[String] = ["Q", "W", "E", "A", "S", "D"]
 
 var helpers: RefCounted = null  # CanvasHelpers
 var simulator: RefCounted = null  # BattleSimulator
@@ -14,9 +15,12 @@ var cards: Array[Dictionary] = []
 # 当前视口尺寸与布局缓存（由控制器在绘制/输入前刷新）。
 var view_size: Vector2 = Vector2.ZERO
 var board_rect: Rect2 = Rect2()
-var card_pick_rects: Dictionary = {}
 var battle_card_rects: Dictionary = {}
-var start_rect: Rect2 = Rect2()
+var main_menu_rects: Dictionary = {}
+var repository_card_rects: Dictionary = {}
+var deck_slot_rects: Dictionary = {}
+var back_rect: Rect2 = Rect2()
+var save_deck_rect: Rect2 = Rect2()
 var restart_rect: Rect2 = Rect2()
 var deck_rect: Rect2 = Rect2()
 
@@ -24,6 +28,7 @@ var deck_rect: Rect2 = Rect2()
 var selected_card_ids: Array[String] = []
 var selected_battle_card_id: String = ""
 var info_card_id: String = ""  # 当前显示详情的卡牌 id
+var controlled_side: String = Config.PLAYER  # 当前本机玩家在模拟器中的阵营
 
 # V0.4 联机：断线判负时覆盖胜者显示（""=不覆盖，用 simulator.match_winner）
 var override_winner: String = ""
@@ -37,10 +42,10 @@ func setup(helpers_ref: RefCounted, sim: RefCounted, task_sys: RefCounted, card_
 	cards = card_list
 
 
-# 依据视口尺寸计算战场板面矩形；选卡界面不使用板面，直接返回。
-func update_layout(new_view_size: Vector2, is_deck_select: bool) -> void:
+# 依据视口尺寸计算战场板面矩形；前置界面不使用板面，直接返回。
+func update_layout(new_view_size: Vector2, is_frontend: bool) -> void:
 	view_size = new_view_size
-	if is_deck_select:
+	if is_frontend:
 		return
 
 	var top: float = 70.0
@@ -87,66 +92,198 @@ func draw_background(canvas: CanvasItem) -> void:
 	canvas.draw_rect(Rect2(Vector2.ZERO, view_size), Color(0.06, 0.07, 0.09))
 
 
-# —— 选卡界面 ——
-func draw_deck_select(canvas: CanvasItem) -> void:
-	card_pick_rects.clear()
-	var margin: float = max(18.0, view_size.x * 0.04)
-	var title_y: float = 30.0
-	helpers.draw_text_line(canvas, "奥术前线 V0.2", Rect2(margin, title_y, view_size.x - margin * 2.0, 34.0), 24, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "8 选 6；局内任务完成后自动进化。", Rect2(margin, title_y + 42.0, view_size.x - margin * 2.0, 24.0), 16, Color(0.68, 0.73, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
+# —— 对局前界面 ——
+func draw_main_menu(canvas: CanvasItem, saved_deck_ids: Array[String], status_text: String = "") -> void:
+	main_menu_rects.clear()
+	var margin: float = max(20.0, view_size.x * 0.055)
+	helpers.draw_text_line(canvas, "奥术前线", Rect2(margin, 38.0, view_size.x - margin * 2.0, 46.0), 34, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "选择行动", Rect2(margin, 86.0, view_size.x - margin * 2.0, 24.0), 15, Color(0.58, 0.66, 0.75), HORIZONTAL_ALIGNMENT_CENTER)
 
-	var grid_top: float = title_y + 82.0
-	var gap: float = 10.0
-	var grid_width: float = view_size.x - margin * 2.0
-	var card_width: float = (grid_width - gap) * 0.5
-	var bottom_space: float = 126.0
-	var card_height: float = clamp((view_size.y - grid_top - bottom_space - gap * 3.0) / 4.0, 88.0, 128.0)
-
-	for index in range(cards.size()):
+	var gap: float = 14.0
+	var button_top: float = 140.0
+	var button_width: float = (view_size.x - margin * 2.0 - gap) * 0.5
+	var button_height: float = 112.0
+	var entries: Array[Dictionary] = [
+		{"id": "single", "title": "单机", "hint": "使用当前牌组对战 Bot", "accent": Color(0.32, 0.67, 0.94)},
+		{"id": "online", "title": "联机", "hint": "创建或加入房间", "accent": Color(0.35, 0.78, 0.57)},
+		{"id": "compendium", "title": "图鉴", "hint": "查看单位与进化说明", "accent": Color(0.83, 0.62, 0.31)},
+		{"id": "deck", "title": "牌组", "hint": "编辑并保存出战配置", "accent": Color(0.68, 0.54, 0.92)}
+	]
+	for index in range(entries.size()):
+		var entry: Dictionary = entries[index]
 		var col: int = index % 2
 		var row: int = int(index / 2)
-		var rect: Rect2 = Rect2(
-			Vector2(margin + col * (card_width + gap), grid_top + row * (card_height + gap)),
-			Vector2(card_width, card_height)
-		)
+		var rect: Rect2 = Rect2(Vector2(margin + col * (button_width + gap), button_top + row * (button_height + gap)), Vector2(button_width, button_height))
+		main_menu_rects[String(entry["id"])] = rect
+		_draw_menu_button(canvas, rect, String(entry["title"]), String(entry["hint"]), entry["accent"])
+
+	var deck_top: float = max(button_top + button_height * 2.0 + gap + 54.0, view_size.y * 0.46)
+	helpers.draw_text_line(canvas, "当前牌组  %d/%d" % [saved_deck_ids.size(), Config.CARD_PICK_COUNT], Rect2(margin, deck_top - 38.0, view_size.x - margin * 2.0, 28.0), 19, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
+	_draw_deck_preview(canvas, saved_deck_ids, Rect2(margin, deck_top, view_size.x - margin * 2.0, min(360.0, view_size.y - deck_top - 62.0)))
+	var footer: String = status_text if status_text != "" else "单机与联机共用已保存的当前牌组"
+	helpers.draw_text_line(canvas, footer, Rect2(margin, view_size.y - 42.0, view_size.x - margin * 2.0, 20.0), 13, Color(0.60, 0.68, 0.76), HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_menu_button(canvas: CanvasItem, rect: Rect2, title: String, hint: String, accent: Color) -> void:
+	helpers.draw_panel(canvas, rect, Color(0.105, 0.125, 0.16), 8.0, accent.darkened(0.18), 2.0)
+	helpers.draw_text_line(canvas, title, Rect2(rect.position + Vector2(16.0, 19.0), Vector2(rect.size.x - 32.0, 34.0)), 25, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_LEFT)
+	helpers.draw_text_line(canvas, hint, Rect2(rect.position + Vector2(16.0, 63.0), Vector2(rect.size.x - 32.0, 22.0)), 13, Color(0.65, 0.71, 0.78), HORIZONTAL_ALIGNMENT_LEFT)
+	canvas.draw_rect(Rect2(rect.position + Vector2(16.0, rect.size.y - 12.0), Vector2(42.0, 3.0)), accent)
+
+
+func _draw_deck_preview(canvas: CanvasItem, deck_ids: Array[String], area: Rect2) -> void:
+	var cols: int = 3 if area.size.x >= 520.0 else 2
+	var gap: float = 10.0
+	var rows: int = int(ceil(float(Config.CARD_PICK_COUNT) / float(cols)))
+	var slot_width: float = (area.size.x - gap * float(cols - 1)) / float(cols)
+	var slot_height: float = min(160.0, (area.size.y - gap * float(rows - 1)) / float(rows))
+	for index in range(Config.CARD_PICK_COUNT):
+		var col: int = index % cols
+		var row: int = int(index / cols)
+		var rect: Rect2 = Rect2(area.position + Vector2(col * (slot_width + gap), row * (slot_height + gap)), Vector2(slot_width, slot_height))
+		if index < deck_ids.size():
+			_draw_deck_slot(canvas, _card_by_id(deck_ids[index]), rect, index)
+		else:
+			helpers.draw_panel(canvas, rect, Color(0.09, 0.10, 0.12), 6.0, Color(0.24, 0.27, 0.32), 1.0)
+			helpers.draw_text_line(canvas, "空位 %d" % (index + 1), rect, 14, Color(0.42, 0.46, 0.52), HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func draw_compendium(canvas: CanvasItem, focused_card_id: String) -> void:
+	repository_card_rects.clear()
+	_draw_frontend_header(canvas, "图鉴", "选择下方单位，查看完整说明")
+	var margin: float = max(18.0, view_size.x * 0.04)
+	var detail_rect: Rect2 = Rect2(margin, 96.0, view_size.x - margin * 2.0, 360.0)
+	_draw_catalog_detail(canvas, _card_by_id(focused_card_id), detail_rect)
+	helpers.draw_text_line(canvas, "单位仓库", Rect2(margin, 478.0, view_size.x - margin * 2.0, 28.0), 19, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
+	_draw_repository(canvas, Rect2(margin, 516.0, view_size.x - margin * 2.0, view_size.y - 538.0), focused_card_id, [])
+
+
+func draw_deck_builder(canvas: CanvasItem, draft_ids: Array[String], status_text: String) -> void:
+	repository_card_rects.clear()
+	deck_slot_rects.clear()
+	_draw_frontend_header(canvas, "牌组", "选择 6 张卡，保存后供单机与联机使用")
+	var margin: float = max(18.0, view_size.x * 0.04)
+	save_deck_rect = Rect2(view_size.x - margin - 140.0, 22.0, 140.0, 44.0)
+	var save_enabled: bool = draft_ids.size() == Config.CARD_PICK_COUNT
+	helpers.draw_panel(canvas, save_deck_rect, Color(0.18, 0.42, 0.62) if save_enabled else Color(0.13, 0.15, 0.18), 6.0, Color(0.48, 0.78, 0.96) if save_enabled else Color(0.26, 0.29, 0.33), 1.5)
+	helpers.draw_text_line(canvas, "保存牌组" if save_enabled else "%d/%d" % [draft_ids.size(), Config.CARD_PICK_COUNT], save_deck_rect, 16, Color(0.96, 0.97, 0.98) if save_enabled else Color(0.48, 0.52, 0.58), HORIZONTAL_ALIGNMENT_CENTER)
+
+	helpers.draw_text_line(canvas, "当前编辑", Rect2(margin, 92.0, view_size.x - margin * 2.0, 26.0), 18, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
+	var deck_area: Rect2 = Rect2(margin, 126.0, view_size.x - margin * 2.0, 220.0)
+	_draw_editable_deck(canvas, draft_ids, deck_area)
+	var message: String = status_text if status_text != "" else "点击已选卡可移出牌组；未保存的改动不会用于对局。"
+	helpers.draw_text_line(canvas, message, Rect2(margin, 360.0, view_size.x - margin * 2.0, 22.0), 13, Color(0.72, 0.76, 0.82), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "单位仓库", Rect2(margin, 402.0, view_size.x - margin * 2.0, 28.0), 19, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
+	_draw_repository(canvas, Rect2(margin, 440.0, view_size.x - margin * 2.0, view_size.y - 462.0), "", draft_ids)
+
+
+func _draw_frontend_header(canvas: CanvasItem, title: String, subtitle: String) -> void:
+	var margin: float = max(18.0, view_size.x * 0.04)
+	back_rect = Rect2(margin, 22.0, 112.0, 44.0)
+	helpers.draw_panel(canvas, back_rect, Color(0.12, 0.14, 0.17), 6.0, Color(0.30, 0.34, 0.40), 1.0)
+	helpers.draw_text_line(canvas, "返回", back_rect, 15, Color(0.86, 0.89, 0.93), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, title, Rect2(margin + 128.0, 18.0, view_size.x - margin * 2.0 - 256.0, 30.0), 25, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, subtitle, Rect2(margin + 128.0, 50.0, view_size.x - margin * 2.0 - 256.0, 20.0), 12, Color(0.58, 0.66, 0.75), HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_editable_deck(canvas: CanvasItem, deck_ids: Array[String], area: Rect2) -> void:
+	var cols: int = 3
+	var gap: float = 9.0
+	var slot_width: float = (area.size.x - gap * 2.0) / 3.0
+	var slot_height: float = (area.size.y - gap) * 0.5
+	for index in range(Config.CARD_PICK_COUNT):
+		var col: int = index % cols
+		var row: int = int(index / cols)
+		var rect: Rect2 = Rect2(area.position + Vector2(col * (slot_width + gap), row * (slot_height + gap)), Vector2(slot_width, slot_height))
+		if index < deck_ids.size():
+			var card_id: String = deck_ids[index]
+			deck_slot_rects[card_id] = rect
+			_draw_deck_slot(canvas, _card_by_id(card_id), rect, index)
+		else:
+			helpers.draw_panel(canvas, rect, Color(0.085, 0.095, 0.115), 6.0, Color(0.24, 0.27, 0.32), 1.0)
+			helpers.draw_text_line(canvas, "空位 %d" % (index + 1), rect, 13, Color(0.40, 0.44, 0.50), HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_deck_slot(canvas: CanvasItem, card: Dictionary, rect: Rect2, index: int) -> void:
+	if card.is_empty():
+		return
+	helpers.draw_panel(canvas, rect, Color(0.13, 0.18, 0.23), 6.0, Color(0.34, 0.60, 0.82), 1.5)
+	var icon_center: Vector2 = rect.position + Vector2(35.0, rect.size.y * 0.5)
+	if not helpers.draw_card_art_icon(canvas, card, icon_center, min(58.0, rect.size.y - 18.0), Color.WHITE):
+		helpers.draw_unit_shape(canvas, card, icon_center, 15.0, card["color"], Color(0.04, 0.05, 0.07), String(card["short_name"]), 16)
+	helpers.draw_text_line(canvas, "%d  %s" % [index + 1, String(card["name"])], Rect2(rect.position + Vector2(64.0, 20.0), Vector2(rect.size.x - 72.0, 22.0)), 15, Color(0.94, 0.96, 0.98), HORIZONTAL_ALIGNMENT_LEFT)
+	helpers.draw_text_line(canvas, "%d费 · %s" % [int(card["cost"]), String(card["role"])], Rect2(rect.position + Vector2(64.0, 50.0), Vector2(rect.size.x - 72.0, 18.0)), 12, Color(0.64, 0.72, 0.80), HORIZONTAL_ALIGNMENT_LEFT)
+
+
+func _draw_repository(canvas: CanvasItem, area: Rect2, focused_id: String, selected_ids: Array[String]) -> void:
+	var cols: int = 2
+	var gap: float = 9.0
+	var rows: int = int(ceil(float(cards.size()) / float(cols)))
+	var card_width: float = (area.size.x - gap * float(cols - 1)) / float(cols)
+	var card_height: float = min(184.0, (area.size.y - gap * float(rows - 1)) / float(rows))
+	for index in range(cards.size()):
+		var col: int = index % cols
+		var row: int = int(index / cols)
+		var rect: Rect2 = Rect2(area.position + Vector2(col * (card_width + gap), row * (card_height + gap)), Vector2(card_width, card_height))
 		var card: Dictionary = cards[index]
-		card_pick_rects[card["id"]] = rect
-		_draw_pick_card(canvas, card, rect, selected_card_ids.has(card["id"]))
-
-	var info_rect: Rect2 = Rect2(margin, view_size.y - 116.0, view_size.x - margin * 2.0, 22.0)
-	helpers.draw_text_line(canvas, "已选 %d/%d" % [selected_card_ids.size(), Config.CARD_PICK_COUNT], info_rect, 18, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_CENTER)
-	var hint: String = "点选卡牌切换配置；进化只影响后续使用。"
-	if simulator.event_log.size() > 0:
-		hint = simulator.event_log[simulator.event_log.size() - 1]
-	helpers.draw_text_line(canvas, hint, Rect2(margin, view_size.y - 94.0, view_size.x - margin * 2.0, 18.0), 13, Color(0.62, 0.68, 0.76), HORIZONTAL_ALIGNMENT_CENTER)
-	start_rect = Rect2(margin, view_size.y - 78.0, view_size.x - margin * 2.0, 54.0)
-	var start_enabled: bool = selected_card_ids.size() == Config.CARD_PICK_COUNT
-	var start_color: Color = Color(0.24, 0.56, 0.88) if start_enabled else Color(0.18, 0.20, 0.24)
-	var start_text_color: Color = Color.WHITE if start_enabled else Color(0.50, 0.54, 0.60)
-	helpers.draw_panel(canvas, start_rect, start_color, 8.0, Color(0.58, 0.78, 0.98) if start_enabled else Color(0.26, 0.28, 0.32), 2.0)
-	helpers.draw_text_line(canvas, "开始本地对局" if start_enabled else "请选择 6 张卡", start_rect, 20, start_text_color, HORIZONTAL_ALIGNMENT_CENTER)
+		var card_id: String = String(card["id"])
+		repository_card_rects[card_id] = rect
+		_draw_repository_card(canvas, card, rect, card_id == focused_id, selected_ids.has(card_id))
 
 
-func _draw_pick_card(canvas: CanvasItem, card: Dictionary, rect: Rect2, selected: bool) -> void:
-	var base_color: Color = Color(0.13, 0.15, 0.19)
-	if selected:
-		base_color = Color(0.14, 0.23, 0.31)
-	helpers.draw_panel(canvas, rect, base_color, 7.0, Color(0.34, 0.62, 0.84) if selected else Color(0.24, 0.27, 0.32), 2.0 if selected else 1.0)
-
-	var icon_rect: Rect2 = Rect2(rect.position + Vector2(10.0, 12.0), Vector2(42.0, 42.0))
-	if not helpers.draw_card_art_icon(canvas, card, icon_rect.get_center(), 40.0, Color.WHITE):
-		helpers.draw_unit_shape(canvas, card, icon_rect.get_center(), 13.0, card["color"], Color(0.04, 0.05, 0.07), String(card["short_name"]), 18)
-	helpers.draw_text_line(canvas, "%s  %d费" % [card["name"], int(card["cost"])], Rect2(rect.position + Vector2(60.0, 12.0), Vector2(rect.size.x - 70.0, 24.0)), 17, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_LEFT)
-	helpers.draw_text_line(canvas, card["role"], Rect2(rect.position + Vector2(60.0, 38.0), Vector2(rect.size.x - 70.0, 20.0)), 14, Color(0.64, 0.71, 0.78), HORIZONTAL_ALIGNMENT_LEFT)
-
-	var note: String = "trial：" + String(card["trial_note"])
-	helpers.draw_two_line_text(canvas, note, Rect2(rect.position + Vector2(10.0, 62.0), Vector2(rect.size.x - 20.0, 38.0)), 13, Color(0.70, 0.76, 0.82))
+func _draw_repository_card(canvas: CanvasItem, card: Dictionary, rect: Rect2, focused: bool, selected: bool) -> void:
+	var active: bool = focused or selected
+	var fill: Color = Color(0.14, 0.20, 0.25) if active else Color(0.11, 0.13, 0.16)
+	var stroke: Color = Color(0.40, 0.70, 0.92) if active else Color(0.24, 0.27, 0.32)
+	helpers.draw_panel(canvas, rect, fill, 6.0, stroke, 2.0 if active else 1.0)
+	var icon_center: Vector2 = rect.position + Vector2(rect.size.x * 0.5, 46.0)
+	if not helpers.draw_card_art_icon(canvas, card, icon_center, 68.0, Color.WHITE):
+		helpers.draw_unit_shape(canvas, card, icon_center, 19.0, card["color"], Color(0.04, 0.05, 0.07), String(card["short_name"]), 18)
+	helpers.draw_text_line(canvas, String(card["name"]), Rect2(rect.position + Vector2(6.0, 84.0), Vector2(rect.size.x - 12.0, 22.0)), 15, Color(0.94, 0.96, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "%d费 · %s" % [int(card["cost"]), String(card["role"])], Rect2(rect.position + Vector2(6.0, 108.0), Vector2(rect.size.x - 12.0, 18.0)), 11, Color(0.63, 0.70, 0.78), HORIZONTAL_ALIGNMENT_CENTER)
 	var evolution: Dictionary = card.get("evolution", {})
-	helpers.draw_text_line(canvas, "进化：%s" % String(evolution.get("name", "未设置")), Rect2(rect.position + Vector2(10.0, rect.size.y - 24.0), Vector2(rect.size.x - 20.0, 18.0)), 12, Color(0.86, 0.72, 0.42), HORIZONTAL_ALIGNMENT_RIGHT)
-
+	helpers.draw_text_line(canvas, "→ %s" % String(evolution.get("name", "未设置")), Rect2(rect.position + Vector2(6.0, rect.size.y - 30.0), Vector2(rect.size.x - 12.0, 18.0)), 11, Color(0.84, 0.70, 0.40), HORIZONTAL_ALIGNMENT_CENTER)
 	if selected:
-		canvas.draw_circle(rect.position + Vector2(rect.size.x - 18.0, 18.0), 10.0, Color(0.35, 0.78, 0.95))
-		helpers.draw_text_line(canvas, "✓", Rect2(rect.position + Vector2(rect.size.x - 28.0, 7.0), Vector2(20.0, 20.0)), 16, Color(0.04, 0.06, 0.08), HORIZONTAL_ALIGNMENT_CENTER)
+		canvas.draw_circle(rect.position + Vector2(rect.size.x - 17.0, 17.0), 9.0, Color(0.35, 0.78, 0.95))
+		helpers.draw_text_line(canvas, "✓", Rect2(rect.position + Vector2(rect.size.x - 26.0, 7.0), Vector2(18.0, 18.0)), 14, Color(0.04, 0.06, 0.08), HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_catalog_detail(canvas: CanvasItem, card: Dictionary, rect: Rect2) -> void:
+	helpers.draw_panel(canvas, rect, Color(0.10, 0.12, 0.15), 8.0, Color(0.28, 0.33, 0.39), 1.0)
+	if card.is_empty():
+		helpers.draw_text_line(canvas, "选择一个单位查看说明", rect, 16, Color(0.58, 0.64, 0.72), HORIZONTAL_ALIGNMENT_CENTER)
+		return
+	var art_rect: Rect2 = Rect2(rect.position + Vector2(18.0, 18.0), Vector2(150.0, 150.0))
+	helpers.draw_panel(canvas, art_rect, Color(0.07, 0.085, 0.11), 6.0, Color(0.22, 0.27, 0.34), 1.0)
+	if not helpers.draw_card_art_icon(canvas, card, art_rect.get_center(), 126.0, Color.WHITE):
+		helpers.draw_unit_shape(canvas, card, art_rect.get_center(), 34.0, card["color"], Color(0.04, 0.05, 0.07), String(card["short_name"]), 28)
+	var text_x: float = art_rect.end.x + 22.0
+	var text_width: float = rect.end.x - text_x - 18.0
+	helpers.draw_text_line(canvas, String(card["name"]), Rect2(text_x, rect.position.y + 20.0, text_width, 34.0), 27, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_LEFT)
+	helpers.draw_text_line(canvas, "%d费 · %s · %s" % [int(card["cost"]), String(card["role"]), "单位" if String(card["kind"]) == "unit" else "法术"], Rect2(text_x, rect.position.y + 60.0, text_width, 22.0), 14, Color(0.67, 0.75, 0.84), HORIZONTAL_ALIGNMENT_LEFT)
+	helpers.draw_two_line_text(canvas, _card_stats_text(card), Rect2(text_x, rect.position.y + 92.0, text_width, 48.0), 13, Color(0.80, 0.84, 0.88))
+	helpers.draw_two_line_text(canvas, String(card.get("trial_note", "")), Rect2(text_x, rect.position.y + 142.0, text_width, 44.0), 12, Color(0.60, 0.67, 0.74))
+
+	var task: Dictionary = card.get("task", {})
+	var evolution: Dictionary = card.get("evolution", {})
+	helpers.draw_text_line(canvas, "任务", Rect2(rect.position + Vector2(18.0, 190.0), Vector2(74.0, 22.0)), 15, Color(0.86, 0.70, 0.36), HORIZONTAL_ALIGNMENT_LEFT)
+	helpers.draw_two_line_text(canvas, String(task.get("summary", "未设置")), Rect2(rect.position + Vector2(92.0, 188.0), Vector2(rect.size.x - 110.0, 50.0)), 13, Color(0.78, 0.81, 0.85))
+	helpers.draw_text_line(canvas, "进化", Rect2(rect.position + Vector2(18.0, 254.0), Vector2(74.0, 22.0)), 15, Color(0.44, 0.88, 0.66), HORIZONTAL_ALIGNMENT_LEFT)
+	helpers.draw_text_line(canvas, String(evolution.get("name", "未设置")), Rect2(rect.position + Vector2(92.0, 252.0), Vector2(rect.size.x - 110.0, 22.0)), 15, Color(0.82, 0.90, 0.86), HORIZONTAL_ALIGNMENT_LEFT)
+	helpers.draw_two_line_text(canvas, String(evolution.get("summary", "")), Rect2(rect.position + Vector2(92.0, 278.0), Vector2(rect.size.x - 110.0, 54.0)), 13, Color(0.67, 0.74, 0.78))
+
+
+func _card_stats_text(card: Dictionary) -> String:
+	if String(card.get("kind", "")) == "spell":
+		return "伤害 %.0f · 基地伤害 %.0f · 范围 %.1f · 模式 %s" % [float(card.get("damage", 0.0)), float(card.get("base_damage", 0.0)), float(card.get("radius", 0.0)), String(card.get("spell_mode", ""))]
+	return "数量 %d · 生命 %.0f · 攻击 %.0f · 间隔 %.2fs · 射程 %.1f · 移速 %.1f" % [int(card.get("count", 1)), float(card.get("hp", 0.0)), float(card.get("damage", 0.0)), float(card.get("attack_cooldown", 0.0)), float(card.get("range", 0.0)), float(card.get("speed", 0.0))]
+
+
+func _card_by_id(card_id: String) -> Dictionary:
+	for card in cards:
+		if String(card.get("id", "")) == card_id:
+			return card
+	return {}
 
 
 # —— 战场界面 ——
@@ -294,7 +431,9 @@ func _draw_battle_card_bar(canvas: CanvasItem) -> void:
 	var bar_top: float = view_size.y - 162.0
 	var bar_rect: Rect2 = Rect2(margin, bar_top, view_size.x - margin * 2.0, 148.0)
 	helpers.draw_panel(canvas, bar_rect, Color(0.10, 0.12, 0.15), 8.0, Color(0.22, 0.25, 0.29), 1.0)
-	helpers.draw_text_line(canvas, "常驻卡组  任务 %d/%d  进化 %d" % [int(simulator.stats.get("player_tasks_completed", 0)), selected_card_ids.size(), int(simulator.stats.get("player_evolutions", 0))], Rect2(bar_rect.position + Vector2(10.0, 8.0), Vector2(bar_rect.size.x - 20.0, 18.0)), 14, Color(0.75, 0.80, 0.86), HORIZONTAL_ALIGNMENT_LEFT)
+	var task_stat_key: String = "player_tasks_completed" if controlled_side == Config.PLAYER else "bot_tasks_completed"
+	var evolution_stat_key: String = "player_evolutions" if controlled_side == Config.PLAYER else "bot_evolutions"
+	helpers.draw_text_line(canvas, "常驻卡组  任务 %d/%d  进化 %d" % [int(simulator.stats.get(task_stat_key, 0)), selected_card_ids.size(), int(simulator.stats.get(evolution_stat_key, 0))], Rect2(bar_rect.position + Vector2(10.0, 8.0), Vector2(bar_rect.size.x - 20.0, 18.0)), 14, Color(0.75, 0.80, 0.86), HORIZONTAL_ALIGNMENT_LEFT)
 	_draw_mana_bar(canvas, Rect2(bar_rect.position + Vector2(10.0, 32.0), Vector2(bar_rect.size.x - 20.0, 10.0)))
 
 	var gap: float = 6.0
@@ -304,26 +443,28 @@ func _draw_battle_card_bar(canvas: CanvasItem) -> void:
 	for index in range(selected_card_ids.size()):
 		var card_id: String = selected_card_ids[index]
 		var base_card: Dictionary = task_system.card_by_id(card_id)
-		var card: Dictionary = task_system.active_card_by_id(Config.PLAYER, card_id)
+		var card: Dictionary = task_system.active_card_by_id(controlled_side, card_id)
 		var rect: Rect2 = Rect2(bar_rect.position.x + 10.0 + index * (card_width + gap), y, card_width, card_height)
 		battle_card_rects[card_id] = rect
-		_draw_battle_card(canvas, base_card, card, rect, selected_battle_card_id == card_id)
+		_draw_battle_card(canvas, base_card, card, rect, selected_battle_card_id == card_id, index)
 
 
 func _draw_mana_bar(canvas: CanvasItem, rect: Rect2) -> void:
+	var mana: float = simulator.player_mana() if controlled_side == Config.PLAYER else simulator.bot_mana()
 	canvas.draw_rect(rect, Color(0.05, 0.06, 0.08))
-	canvas.draw_rect(Rect2(rect.position, Vector2(rect.size.x * simulator.player_mana() / Config.MANA_MAX, rect.size.y)), Color(0.22, 0.56, 0.92))
+	canvas.draw_rect(Rect2(rect.position, Vector2(rect.size.x * mana / Config.MANA_MAX, rect.size.y)), Color(0.22, 0.56, 0.92))
 	for tick in range(int(Config.MANA_MAX) + 1):
 		var x: float = rect.position.x + rect.size.x * float(tick) / Config.MANA_MAX
 		canvas.draw_line(Vector2(x, rect.position.y), Vector2(x, rect.end.y), Color(0.95, 0.96, 1.0, 0.18), 1.0)
 
 
-func _draw_battle_card(canvas: CanvasItem, base_card: Dictionary, card: Dictionary, rect: Rect2, selected: bool) -> void:
-	var affordable: bool = simulator.player_mana() >= float(card["cost"])
+func _draw_battle_card(canvas: CanvasItem, base_card: Dictionary, card: Dictionary, rect: Rect2, selected: bool, hotkey_index: int) -> void:
+	var mana: float = simulator.player_mana() if controlled_side == Config.PLAYER else simulator.bot_mana()
+	var affordable: bool = mana >= float(card["cost"])
 	var bg: Color = Color(0.14, 0.17, 0.21) if affordable else Color(0.09, 0.10, 0.12)
 	if selected:
 		bg = Color(0.18, 0.30, 0.38)
-	var flashing: bool = simulator.is_evolution_flashing(Config.PLAYER, String(base_card["id"]))
+	var flashing: bool = simulator.is_evolution_flashing(controlled_side, String(base_card["id"]))
 	var border_color: Color = Color(0.48, 0.78, 0.94) if selected else Color(0.24, 0.27, 0.32)
 	var border_width: float = 2.0 if selected else 1.0
 	if flashing:
@@ -331,6 +472,10 @@ func _draw_battle_card(canvas: CanvasItem, base_card: Dictionary, card: Dictiona
 		border_color = Color(0.47, 0.92, 0.72)
 		border_width = 3.0
 	helpers.draw_panel(canvas, rect, bg, 7.0, border_color, border_width)
+	if hotkey_index >= 0 and hotkey_index < CARD_HOTKEY_LABELS.size():
+		var key_rect: Rect2 = Rect2(rect.position + Vector2(4.0, 4.0), Vector2(20.0, 17.0))
+		helpers.draw_panel(canvas, key_rect, Color(0.05, 0.07, 0.09, 0.92), 3.0, Color(0.42, 0.50, 0.60), 1.0)
+		helpers.draw_text_line(canvas, CARD_HOTKEY_LABELS[hotkey_index], key_rect, 10, Color(0.88, 0.92, 0.96), HORIZONTAL_ALIGNMENT_CENTER)
 	var icon_center: Vector2 = rect.position + Vector2(rect.size.x * 0.5, 22.0)
 	if not helpers.draw_card_art_icon(canvas, card, icon_center, 34.0, Color.WHITE if affordable else Color(0.42, 0.44, 0.46)):
 		helpers.draw_unit_shape(canvas, card, icon_center, 12.0, card["color"] if affordable else Color(0.30, 0.32, 0.34), Color(0.04, 0.05, 0.07), String(card["short_name"]), 16)
@@ -338,7 +483,7 @@ func _draw_battle_card(canvas: CanvasItem, base_card: Dictionary, card: Dictiona
 	helpers.draw_text_line(canvas, "%d费" % int(card["cost"]), Rect2(rect.position + Vector2(3.0, 54.0), Vector2(rect.size.x - 6.0, 13.0)), 11, Color(0.70, 0.84, 1.0) if affordable else Color(0.42, 0.46, 0.52), HORIZONTAL_ALIGNMENT_CENTER)
 
 	# 任务进度条：底部显示，已进化变绿。
-	var progress_ratio: float = task_system.task_progress_ratio(Config.PLAYER, String(base_card["id"]))
+	var progress_ratio: float = task_system.task_progress_ratio(controlled_side, String(base_card["id"]))
 	var bar_x: float = rect.position.x + 4.0
 	var bar_y: float = rect.position.y + rect.size.y - 12.0
 	var bar_w: float = rect.size.x - 8.0
@@ -348,7 +493,7 @@ func _draw_battle_card(canvas: CanvasItem, base_card: Dictionary, card: Dictiona
 		canvas.draw_rect(Rect2(bar_x, bar_y, bar_w, bar_h), Color(0.28, 0.76, 0.42))
 	else:
 		canvas.draw_rect(Rect2(bar_x, bar_y, bar_w * progress_ratio, bar_h), Color(0.86, 0.66, 0.30) if affordable else Color(0.40, 0.36, 0.22))
-	helpers.draw_text_line(canvas, task_system.task_progress_text(Config.PLAYER, String(base_card["id"])), Rect2(rect.position + Vector2(3.0, 68.0), Vector2(rect.size.x - 6.0, 12.0)), 9, Color(0.90, 0.76, 0.46) if not bool(card.get("evolved", false)) else Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, task_system.task_progress_text(controlled_side, String(base_card["id"])), Rect2(rect.position + Vector2(3.0, 68.0), Vector2(rect.size.x - 6.0, 12.0)), 9, Color(0.90, 0.76, 0.46) if not bool(card.get("evolved", false)) else Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_event_log(canvas: CanvasItem) -> void:
@@ -369,7 +514,7 @@ func _draw_card_info_panel(canvas: CanvasItem) -> void:
 
 	var card_id: String = selected_battle_card_id
 	var base_card: Dictionary = task_system.card_by_id(card_id)
-	var card: Dictionary = task_system.active_card_by_id(Config.PLAYER, card_id)
+	var card: Dictionary = task_system.active_card_by_id(controlled_side, card_id)
 	if base_card.size() == 0 or card.size() == 0:
 		return
 
@@ -389,8 +534,8 @@ func _draw_card_info_panel(canvas: CanvasItem) -> void:
 	if task.size() > 0:
 		var task_summary: String = String(task.get("summary", ""))
 		helpers.draw_text_line(canvas, "任务：%s" % task_summary, task_rect, 12, Color(0.86, 0.72, 0.42), HORIZONTAL_ALIGNMENT_LEFT)
-		var state: Dictionary = task_system.task_state(Config.PLAYER, card_id)
-		var progress_text: String = task_system.task_progress_text(Config.PLAYER, card_id)
+		var state: Dictionary = task_system.task_state(controlled_side, card_id)
+		var progress_text: String = task_system.task_progress_text(controlled_side, card_id)
 		helpers.draw_text_line(canvas, "进度：%s" % progress_text, Rect2(task_rect.position + Vector2(0.0, 18.0), Vector2(task_rect.size.x, 16.0)), 12, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_LEFT)
 
 	# 右：进化效果
@@ -408,8 +553,9 @@ func _draw_card_info_panel(canvas: CanvasItem) -> void:
 # 调试覆盖层：显示快捷键提示与 Bot 卡组信息。
 func draw_debug_overlay(canvas: CanvasItem, bot_deck: Array[String], rng_seed: int) -> void:
 	var help_lines: Array[String] = [
-		"[+/-] 费用增减  [T] 强制完成任务  [R] 重开",
-		"[D] Bot随机/固定  [S] 重置种子  [F] 隐藏面板",
+		"[Q/W/E/A/S/D] 快速选卡",
+		"[+/-] 费用增减  [T] 强制任务  [R] 重开",
+		"[B] Bot随机/固定  [Y] 重置种子  [F] 隐藏",
 		"Bot: %s" % ", ".join(bot_deck),
 		"种子: %d" % rng_seed
 	]
@@ -445,7 +591,7 @@ func draw_result_overlay(canvas: CanvasItem) -> void:
 	var card_lines: Array[String] = []
 	for card_id in selected_card_ids:
 		var base_card: Dictionary = task_system.card_by_id(card_id)
-		var state: Dictionary = task_system.task_state(Config.PLAYER, card_id)
+		var state: Dictionary = task_system.task_state(controlled_side, card_id)
 		var play_count: int = int(state.get("play_count", 0))
 		var evolved: bool = bool(state.get("evolved", false))
 		var completed_time: float = state.get("completed_at_time", -1.0)
@@ -470,7 +616,7 @@ func draw_result_overlay(canvas: CanvasItem) -> void:
 	helpers.draw_panel(canvas, restart_rect, Color(0.24, 0.56, 0.88), 7.0, Color(0.58, 0.78, 0.98), 1.5)
 	helpers.draw_text_line(canvas, "再战", restart_rect, 18, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_panel(canvas, deck_rect, Color(0.18, 0.21, 0.25), 7.0, Color(0.36, 0.42, 0.50), 1.5)
-	helpers.draw_text_line(canvas, "换卡", deck_rect, 18, Color(0.90, 0.93, 0.96), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "主界面", deck_rect, 18, Color(0.90, 0.93, 0.96), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 # 格式化秒为 mm:ss。
