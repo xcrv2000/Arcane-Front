@@ -59,6 +59,13 @@ var online_status_text: String = ""  # 房间界面顶部状态栏
 var join_input_text: String = ""     # 加入房间时的临时输入
 var disconnect_countdown: float = -1.0  # -1=未启动；>0=倒计时中（秒）
 
+# Issue1: 对方申请了再战（RESULT界面提示）
+var peer_rematch_requested: bool = false
+# Issue2: 对方退出了房间（""=无；"host"=房主退出；"guest"=客机退出）
+var peer_left_reason: String = ""
+# Issue5: 战斗恢复倒计时（>0时显示倒计时覆盖层，暂停模拟）
+var battle_restart_countdown: float = -1.0
+
 # —— 房间/联机按钮（按屏幕尺寸动态计算位置，不用改 UIPainter）——
 var online_create_rect: Rect2 = Rect2()
 var join_input_rect: Rect2 = Rect2()
@@ -163,6 +170,9 @@ func _init_networking() -> void:
 	net.start_match_received.connect(_on_start_match)
 	net.command_received.connect(_on_peer_command)
 	net.result_received.connect(_on_result_received)
+	net.peer_rematch_received.connect(_on_peer_rematch)
+	net.peer_left_received.connect(_on_peer_left)
+	net.resume_battle_received.connect(_on_resume_battle)
 	net.server_error.connect(_on_server_error)
 
 
@@ -178,14 +188,37 @@ func _process(delta: float) -> void:
 	# 断线倒计时在任何界面下都需要更新
 	if disconnect_countdown > 0.0:
 		_tick_disconnect_countdown(delta)
+		queue_redraw()  # Issue3: 确保倒计时在RESULT界面也能每帧刷新
+
+	# Issue5: 战斗恢复倒计时（暂停期间不推进 accumulate，不攒 tick 债）
+	var resume_now: bool = false
+	if battle_restart_countdown > 0.0:
+		battle_restart_countdown = maxf(0.0, battle_restart_countdown - delta)
+		if battle_restart_countdown <= 0.0:
+			battle_restart_countdown = -1.0
+			resume_now = true
+			# —— 倒计时结束：扩展对方NO_OP窗口到 256 tick，避免刚恢复就因为网络抖动缺命令暂停
+			var extra_base: int = scheduler.current_tick
+			for i in range(1, 256 + 1):
+				var t: int = extra_base + i
+				if not scheduler.has_side_command_for_tick(t, peer_game_side):
+					var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
+					scheduler.enqueue_command(noop_peer)
+			# 解除 strict_wait 暂停（consume 会覆盖，但我们同时保证命令齐）
+			scheduler.paused = false
+			simulator.push_event("战斗恢复！")
+		queue_redraw()
 
 	if screen_mode == ScreenMode.BATTLE:
-		var tick_count: int = scheduler.accumulate(delta)
-		for i in range(tick_count):
-			if scheduler.desynced:
-				break  # desync 后不再推进
-			if not _step_one_tick():
-				break  # 等待命令，暂停推进
+		# 倒计时中：完全跳过 accumulate 与推进循环（不攒 tick 债）
+		# 倒计时结束的那一帧（resume_now=true）也先跳过，让扩展窗口生效，下一帧再正常推进
+		if battle_restart_countdown <= 0.0 and not resume_now:
+			var tick_count: int = scheduler.accumulate(delta)
+			for i in range(tick_count):
+				if scheduler.desynced:
+					break  # desync 后不再推进
+				if not _step_one_tick():
+					break  # 等待命令，暂停推进
 
 		if not simulator.running:
 			# 联机：正常结束时通过服务器同步结果；desync/异常结束不主动上报（避免假平局）
@@ -419,8 +452,18 @@ func _handle_press(position: Vector2) -> void:
 	elif screen_mode == ScreenMode.RESULT:
 		if painter.restart_rect.has_point(position):
 			if online_mode:
-				_leave_room()
-			_start_battle()
+				if peer_left_reason == "host":
+					# 房主已退出，房间已解散，按钮不可按
+					pass
+				elif peer_left_reason == "guest":
+					# 客机退出，房主可回到房间等待新客机
+					_back_to_room_wait()
+				elif battle_restart_countdown > 0.0:
+					pass  # 战斗恢复倒计时中，不可按
+				else:
+					_request_online_rematch()
+			else:
+				_start_battle()
 		elif painter.deck_rect.has_point(position):
 			_leave_room()
 
@@ -654,7 +697,24 @@ func _draw() -> void:
 			_draw_net_status_hud()
 			_draw_disconnect_countdown()
 		if screen_mode == ScreenMode.RESULT:
+			# Issue1/2: 同步RESULT界面状态到painter
+			if not online_mode:
+				painter.result_button_mode = "normal"
+				painter.result_rematch_hint = ""
+			else:
+				if peer_left_reason == "host":
+					painter.result_button_mode = "disabled"
+					painter.result_rematch_hint = ""
+				elif peer_left_reason == "guest":
+					painter.result_button_mode = "back_to_room"
+					painter.result_rematch_hint = ""
+				else:
+					painter.result_button_mode = "normal"
+					painter.result_rematch_hint = "对方申请了再战" if peer_rematch_requested else ""
 			painter.draw_result_overlay(self)
+		# Issue5: 战斗恢复倒计时覆盖层
+		if battle_restart_countdown > 0.0:
+			_draw_restart_countdown()
 		_draw_status_banner()
 
 
@@ -684,6 +744,16 @@ func _draw_disconnect_countdown() -> void:
 	helpers.draw_panel(self, panel, Color(0.18, 0.08, 0.08, 0.92), 10.0, Color(0.92, 0.30, 0.28), 2.0)
 	helpers.draw_text_line(self, "对方连接中断", Rect2(panel.position + Vector2(14.0, 16.0), Vector2(panel.size.x - 28.0, 22.0)), 18, Color(0.98, 0.86, 0.40), HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_text_line(self, "等待 %d 秒后判负（%s）" % [int(ceilf(disconnect_countdown)), room_code], Rect2(panel.position + Vector2(14.0, 44.0), Vector2(panel.size.x - 28.0, 18.0)), 13, Color(0.90, 0.80, 0.70), HORIZONTAL_ALIGNMENT_CENTER)
+
+
+# Issue5: 战斗恢复倒计时覆盖层
+func _draw_restart_countdown() -> void:
+	var w: float = size.x
+	var h: float = size.y
+	var panel: Rect2 = Rect2(Vector2(w * 0.5 - 160.0, h * 0.5 - 50.0), Vector2(320.0, 100.0))
+	helpers.draw_panel(self, panel, Color(0.08, 0.12, 0.08, 0.92), 10.0, Color(0.42, 0.92, 0.52), 2.0)
+	helpers.draw_text_line(self, "战斗恢复", Rect2(panel.position + Vector2(14.0, 16.0), Vector2(panel.size.x - 28.0, 28.0)), 22, Color(0.72, 0.96, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(self, "%d" % int(ceilf(battle_restart_countdown)), Rect2(panel.position + Vector2(14.0, 48.0), Vector2(panel.size.x - 28.0, 36.0)), 32, Color(0.96, 0.94, 0.68), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 # —— ROOM_SETUP：选择创建房间，或输入 4 位房间码加入
@@ -771,6 +841,7 @@ func _on_conn_fail(reason: String) -> void:
 func _on_disconnected() -> void:
 	online_status_text = "服务器断开"
 	disconnect_countdown = -1.0
+	battle_restart_countdown = -1.0
 	# 对局中如果未结束则进入结果页
 	if screen_mode == ScreenMode.BATTLE:
 		simulator.running = false
@@ -803,6 +874,9 @@ func _on_room_joined(code: String, side: String) -> void:
 func _on_peer_joined() -> void:
 	online_status_text = "对方已加入房间：%s（双方点准备开始）" % room_code
 	peer_ready = false
+	# Issue4: 对方重连时取消断线倒计时
+	disconnect_countdown = -1.0
+	scheduler.paused = false
 	queue_redraw()
 
 
@@ -825,6 +899,7 @@ func _on_peer_disconnect(grace_seconds: float) -> void:
 func _on_opponent_win_by_dc(winner_side: String, _rc: String) -> void:
 	# 服务器判定断线者负
 	disconnect_countdown = -1.0
+	battle_restart_countdown = -1.0
 	var i_won: bool = (winner_side == my_side)
 	simulator.running = false
 	painter.override_winner = my_game_side if i_won else peer_game_side
@@ -851,9 +926,11 @@ func _on_peer_command(cmd_dict: Dictionary) -> void:
 
 func _on_result_received(winner_side: String, _rc: String) -> void:
 	disconnect_countdown = -1.0
+	battle_restart_countdown = -1.0
 	simulator.running = false
+	peer_rematch_requested = false
+	peer_left_reason = ""
 	if winner_side == "draw":
-		# 真实平局：双方都显示"平局"
 		painter.override_winner = ""
 	else:
 		var i_won: bool = (winner_side == my_side)
@@ -864,6 +941,135 @@ func _on_result_received(winner_side: String, _rc: String) -> void:
 
 func _on_server_error(message: String) -> void:
 	online_status_text = "服务器报错：%s" % message
+	queue_redraw()
+
+
+# Issue1: 对方申请了再战
+func _on_peer_rematch() -> void:
+	peer_rematch_requested = true
+	online_status_text = "对方申请了再战"
+	queue_redraw()
+
+
+# Issue2: 对方主动退出了房间
+func _on_peer_left(who: String) -> void:
+	peer_left_reason = who
+	disconnect_countdown = -1.0
+	scheduler.paused = false
+	if who == "host":
+		online_status_text = "对方退出了房间（房间已解散）"
+	else:
+		online_status_text = "对方退出了房间"
+	queue_redraw()
+
+
+# Issue5: 战斗中断线重连后，服务器下发 RESUME_BATTLE 恢复战场
+# 主机端（非重连方）：无 commands 数据，只需填充对方NO_OP并恢复倒计时
+# 客机端（重连方）：有 commands 数据，需要回放所有命令恢复战场，填充双方滑动窗口NO_OP
+func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_deck: Array[String], peer_deck: Array[String]) -> void:
+	disconnect_countdown = -1.0
+	battle_restart_countdown = -1.0
+	peer_rematch_requested = false
+	peer_left_reason = ""
+	if side_role == "":
+		# —— 非重连方（战场状态完好）——
+		# 关键：断线+3秒恢复期间，对端的命令我们都没收到（对端当时不在线）
+		# 需要为对方的未来 FILL_WINDOW 个 tick 预填 NO_OP 占位。
+		# 真实命令到达后 enqueue_command 会覆盖尚未被 consume 的同tick占位，不会 desync
+		var base_tick: int = scheduler.current_tick
+		var FILL_WINDOW: int = 128  # ~ 2.1s 缓冲，足够命令往返
+		for i in range(1, FILL_WINDOW + 1):
+			var t: int = base_tick + i
+			if not scheduler.has_side_command_for_tick(t, peer_game_side):
+				var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
+				scheduler.enqueue_command(noop_peer)
+		battle_restart_countdown = 3.0
+		scheduler.paused = true
+		online_status_text = "对方已重连，3秒后战斗恢复…"
+		queue_redraw()
+	else:
+		# —— 重连方（主机或客机）：回放命令恢复战场 ——
+		my_side = side_role
+		_online_setup_sides()
+		peer_deck_ids = peer_deck.duplicate()
+		online_mode = true
+		scheduler.strict_wait = true
+		scheduler.sides = [Config.PLAYER, Config.BOT]
+		simulator.set_shared_seed(seed_val)
+		# 初始化战斗（会 reset scheduler、start_battle 等）
+		_start_online_battle(my_deck, peer_deck)
+		# 回放所有命令恢复战场状态
+		if commands.size() > 0:
+			_replay_commands(commands)
+		# 填充双方滑动窗口的 NO_OP 占位（FILL_WINDOW ~ 2秒命令缓冲）
+		var base_tick: int = scheduler.current_tick
+		var FILL_WINDOW: int = 128
+		for i in range(1, FILL_WINDOW + 1):
+			var t: int = base_tick + i
+			# 本方 NO_OP：入队 + 通过网络发给对端（真实PLAY_CARD覆盖会被对端enqueue替换）
+			var noop_self: Dictionary = Command.no_op_command(t, my_game_side)
+			scheduler.enqueue_command(noop_self)
+			if i <= Config.INPUT_DELAY_TICKS:
+				_send_local_command_net(noop_self)
+			# 对方 NO_OP：只入队占位（真实命令到达后 enqueue_command 覆盖）
+			if not scheduler.has_side_command_for_tick(t, peer_game_side):
+				var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
+				scheduler.enqueue_command(noop_peer)
+		# 3秒倒计时后恢复
+		battle_restart_countdown = 3.0
+		scheduler.paused = true
+		online_status_text = "战场已恢复，3秒后战斗继续…"
+		queue_redraw()
+
+
+# 命令回放：按 tick 顺序执行所有命令并推进模拟，恢复到断线前的战场状态
+func _replay_commands(commands: Array) -> void:
+	# 按 tick 分组
+	var cmds_by_tick: Dictionary = {}
+	var max_tick: int = 0
+	for raw_cmd in commands:
+		if typeof(raw_cmd) != TYPE_DICTIONARY:
+			continue
+		var cmd: Dictionary = raw_cmd
+		var tick: int = int(cmd.get("tick", 0))
+		if tick > max_tick:
+			max_tick = tick
+		if not cmds_by_tick.has(tick):
+			cmds_by_tick[tick] = []
+		cmds_by_tick[tick].append(cmd)
+	# 逐 tick 回放
+	for tick in range(1, max_tick + 1):
+		var tick_cmds: Array = cmds_by_tick.get(tick, [])
+		for cmd in tick_cmds:
+			simulator.execute_command(cmd, task_system)
+		simulator.advance_time(Config.TICK_DT)
+		task_system.check_mana(Config.PLAYER, simulator.player_mana())
+		task_system.check_mana(Config.BOT, simulator.bot_mana())
+		simulator.update_units(Config.TICK_DT)
+		simulator.update_spell_effects(Config.TICK_DT)
+		simulator.update_evolution_flashes(Config.TICK_DT)
+		scheduler.current_tick = tick
+	# 网络轮询（回放期间防止TCP超时）
+	if net != null and net.is_attached():
+		net.poll()
+
+
+# Issue2: 客机退出后，房主点"回到房间"回到 ROOM_WAIT 等待新客机
+func _back_to_room_wait() -> void:
+	peer_left_reason = ""
+	peer_rematch_requested = false
+	peer_ready = false
+	my_ready = false
+	disconnect_countdown = -1.0
+	battle_restart_countdown = -1.0
+	painter.override_winner = ""
+	simulator.running = false
+	scheduler.reset()
+	scheduler.strict_wait = true
+	scheduler.paused = false
+	scheduler.desynced = false
+	screen_mode = ScreenMode.ROOM_WAIT
+	online_status_text = "对方退出了房间，等待新玩家加入…"
 	queue_redraw()
 
 
@@ -949,7 +1155,38 @@ func _toggle_ready() -> void:
 	queue_redraw()
 
 
+# —— 联机模式下RESULT页点"再战"：通知对端并回到ROOM_WAIT ——
+func _request_online_rematch() -> void:
+	if net == null or not net.is_tcp_connected():
+		_leave_room()
+		return
+	# 重置scheduler与模拟器残留状态
+	scheduler.reset()
+	scheduler.strict_wait = true
+	scheduler.paused = false
+	scheduler.desynced = false
+	simulator.running = false
+	bot_brain.reset()
+	painter.override_winner = ""
+	disconnect_countdown = -1.0
+	peer_rematch_requested = false
+	# 重置准备状态
+	my_ready = false
+	peer_ready = false
+	# 使用已保存的当前牌组
+	selected_card_ids = saved_deck_ids.duplicate()
+	# Issue1: 发送 REMATCH 通知对端（而非 READY），服务器会广播 PEER_REMATCH
+	net.send_rematch(selected_card_ids)
+	# 回到房间等待界面
+	screen_mode = ScreenMode.ROOM_WAIT
+	online_status_text = "再战：已回到房间 %s，请双方重新点「准备」开始" % room_code
+	queue_redraw()
+
+
 func _leave_room() -> void:
+	# Issue2: 先通知服务器主动退出（区别于断线），再断开TCP
+	if net != null and net.is_tcp_connected() and room_code != "":
+		net.send_leave_room()
 	if net != null:
 		net.disconnect_from_server()
 	room_code = ""
@@ -960,6 +1197,9 @@ func _leave_room() -> void:
 	scheduler.strict_wait = false
 	scheduler.sides = [Config.PLAYER, Config.BOT]
 	disconnect_countdown = -1.0
+	battle_restart_countdown = -1.0
+	peer_rematch_requested = false
+	peer_left_reason = ""
 	painter.override_winner = ""
 	painter.controlled_side = Config.PLAYER
 	selected_card_ids = saved_deck_ids.duplicate()

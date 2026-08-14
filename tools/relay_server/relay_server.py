@@ -67,12 +67,17 @@ class Client:
         self._disconnect_task: Optional[asyncio.Task] = None
 
     async def send(self, obj: dict) -> None:
+        """发送 JSON Lines 包。失败时静默（不递归触发 disconnect，避免超时协程中连锁断开）"""
         try:
             data = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
             self.writer.write(data)
             await self.writer.drain()
         except Exception:
-            await self.server._disconnect_client(self, reason="send_fail")
+            # 只关闭本地写端，不触发 _disconnect_client（断开逻辑由 reader.at_eof 统一触发）
+            try:
+                self.writer.close()
+            except Exception:
+                pass
 
     async def handle_message(self, msg: dict) -> None:
         t = str(msg.get("type", ""))
@@ -85,6 +90,10 @@ class Client:
             self.ready = bool(msg.get("ready", False))
             self.deck = list(msg.get("deck", []))
             await self.server.handle_ready_tick(self)
+        elif t == "REMATCH":
+            await self.server.handle_rematch(self, msg)
+        elif t == "LEAVE_ROOM":
+            await self.server.handle_leave_room(self)
         elif t == "COMMAND":
             await self.server.handle_command(self, dict(msg.get("payload", {})))
         elif t == "RESULT":
@@ -101,10 +110,17 @@ class Room:
         self.started: bool = False
         self.seed: int = 0
         self.created_at = time.time()
+        # 存储双方牌组（即使客户端断线重连，房间仍保留牌组用于再战/重开）
+        self.host_deck: List[str] = []
+        self.guest_deck: List[str] = []
+        # 断线超时任务引用（重连时可取消）
+        self.disconnect_task: Optional[asyncio.Task] = None
+        # 命令日志：存储本局所有命令，供断线重连时回放恢复战场状态
+        self.command_log: List[dict] = []
 
     def peers(self, me: Client) -> List[Client]:
-        out = []
-        if self.host is not me:
+        out: List[Client] = []
+        if self.host is not None and self.host is not me:
             out.append(self.host)
         if self.guest is not None and self.guest is not me:
             out.append(self.guest)
@@ -148,20 +164,69 @@ class RelayServer:
             if room is None:
                 await c.send({"type": "ERROR", "message": "room not found"})
                 return
-            if room.guest is not None:
-                await c.send({"type": "ERROR", "message": "room full"})
-                return
             if c.room_code is not None:
                 await c.send({"type": "ERROR", "message": "already in a room"})
                 return
-            room.guest = c
+            # 判断补位角色：主机位空→主机重连；客机位空→客机加入/重连
+            if room.host is None:
+                joining_side = "host"
+                room.host = c
+            elif room.guest is None:
+                joining_side = "guest"
+                room.guest = c
+            else:
+                await c.send({"type": "ERROR", "message": "room full"})
+                return
             c.room_code = code
-            c.my_side = "guest"
+            c.my_side = joining_side
             c.ready = False
             c.deck = []
-        await c.send({"type": "ROOM_JOINED", "room_code": code, "my_side": "guest"})
-        # 通知 host 有客人加入
-        await room.host.send({"type": "PEER_JOINED"})
+            # 取消断线超时任务（重连时）
+            if room.disconnect_task is not None and not room.disconnect_task.done():
+                room.disconnect_task.cancel()
+                room.disconnect_task = None
+            was_started = room.started
+            saved_host_deck = list(room.host_deck)
+            saved_guest_deck = list(room.guest_deck)
+            saved_commands = list(room.command_log)
+            saved_seed = room.seed
+            # 对端（仍在连接中的一方）
+            peer = room.guest if joining_side == "host" else room.host
+        if was_started and peer is not None:
+            # 战斗中断线后重连：发送 RESUME_BATTLE 恢复战场
+            # 重连方获得命令日志回放恢复状态；对端只需信号恢复
+            if joining_side == "host":
+                # 主机重连：主机获得 commands 回放，客机只需恢复
+                resume_pkt_host = {
+                    "type": "RESUME_BATTLE",
+                    "seed": saved_seed,
+                    "my_side": "host",
+                    "my_deck": saved_host_deck,
+                    "peer_deck": saved_guest_deck,
+                    "commands": saved_commands,
+                }
+                await c.send(resume_pkt_host)
+                await peer.send({"type": "RESUME_BATTLE"})
+            else:
+                # 客机重连：客机获得 commands 回放，主机只需恢复
+                resume_pkt_guest = {
+                    "type": "RESUME_BATTLE",
+                    "seed": saved_seed,
+                    "my_side": "guest",
+                    "my_deck": saved_guest_deck,
+                    "peer_deck": saved_host_deck,
+                    "commands": saved_commands,
+                }
+                await c.send(resume_pkt_guest)
+                await peer.send({"type": "RESUME_BATTLE"})
+        elif was_started and peer is None:
+            # 双方都断线（不应发生，房间应已销毁），按普通加入处理
+            await c.send({"type": "ROOM_JOINED", "room_code": code, "my_side": joining_side})
+        else:
+            # 普通加入（房间未开始战斗）
+            await c.send({"type": "ROOM_JOINED", "room_code": code, "my_side": joining_side})
+            if peer is not None:
+                await peer.send({"type": "PEER_JOINED"})
 
     async def handle_ready_tick(self, c: Client) -> None:
         if not c.room_code:
@@ -170,11 +235,18 @@ class RelayServer:
         room = self.rooms.get(c.room_code)
         if not room:
             return
+        # 存储牌组到 Room（断线重连后仍可用）
+        if c.my_side == "host":
+            room.host_deck = list(c.deck)
+        else:
+            room.guest_deck = list(c.deck)
         # 先把一方的 ready 状态告诉对端（便于房间等待页显示）
         for peer in room.peers(c):
             await peer.send({"type": "PEER_READY", "ready": c.ready, "side": c.my_side})
         if room.all_ready() and not room.started:
             room.started = True
+            # 清空命令日志（新对局开始）
+            room.command_log.clear()
             # 服务器下发共享种子 + 双方牌组
             room.seed = random.randint(1, 2_000_000_000)
             start_pkt_host = {
@@ -201,8 +273,58 @@ class RelayServer:
         room = self.rooms.get(c.room_code)
         if not room:
             return
+        # 记录命令到日志（供断线重连时回放恢复战场）
+        room.command_log.append(payload)
         for peer in room.peers(c):
             await peer.send({"type": "COMMAND", "payload": payload})
+
+    async def handle_rematch(self, c: Client, msg: dict) -> None:
+        """Issue1: 玩家点击"再战"时通知对端"""
+        if not c.room_code:
+            return
+        room = self.rooms.get(c.room_code)
+        if not room:
+            return
+        # 存储牌组并重置 ready
+        c.ready = False
+        c.deck = list(msg.get("deck", []))
+        if c.my_side == "host":
+            room.host_deck = list(c.deck)
+        else:
+            room.guest_deck = list(c.deck)
+        # 通知对端"对方申请了再战"
+        for peer in room.peers(c):
+            await peer.send({"type": "PEER_REMATCH"})
+
+    async def handle_leave_room(self, c: Client) -> None:
+        """Issue2: 玩家主动退出房间（区别于断线）"""
+        if not c.room_code:
+            return
+        leaver_side = c.my_side
+        async with self._lock:
+            room = self.rooms.get(c.room_code)
+            if not room:
+                return
+            peer = None
+            if leaver_side == "host":
+                peer = room.guest
+                # 房主退出 → 房间解散
+                self.rooms.pop(room.code, None)
+            else:
+                peer = room.host
+                # 客机退出 → 移除客机，房间保留
+                room.guest = None
+                room.started = False
+                room.guest_deck = []
+            c.room_code = None
+            c.my_side = None
+            c.ready = False
+        # 通知对端"对方退出了房间"
+        if peer is not None:
+            try:
+                await peer.send({"type": "PEER_LEFT", "who": leaver_side})
+            except Exception:
+                pass
 
     async def handle_result(self, c: Client, msg: dict) -> None:
         if not c.room_code:
@@ -212,14 +334,14 @@ class RelayServer:
             return
         winner = str(msg.get("winner", ""))
         code = str(msg.get("room_code", room.code))
-        # 持久化
+        # 持久化（优先使用 Room 存储的牌组，断线后也有数据）
         record = {
             "ts": int(time.time()),
             "room_code": code,
             "winner": winner,
             "seed": room.seed if room else 0,
-            "host_deck": room.host.deck if room else [],
-            "guest_deck": (room.guest.deck if room and room.guest else []),
+            "host_deck": room.host_deck if room else [],
+            "guest_deck": room.guest_deck if room else [],
             "reporter_side": c.my_side,
         }
         try:
@@ -232,11 +354,16 @@ class RelayServer:
         await room.host.send(result_pkt)
         if room.guest:
             await room.guest.send(result_pkt)
+        # 重置房间 started 与双方 ready 状态，支持"再战"：
+        # 双方回到 ROOM_WAIT 重新点准备后，服务器能再次下发 START
+        room.started = False
+        room.command_log.clear()
+        if room.host is not None:
+            room.host.ready = False
+        if room.guest is not None:
+            room.guest.ready = False
 
     async def _disconnect_client(self, c: Client, reason: str = "") -> None:
-        # 取消之前的延时广播（如果有）
-        if c._disconnect_task is not None and not c._disconnect_task.done():
-            c._disconnect_task.cancel()
         async with self._lock:
             if c in self.clients:
                 self.clients.remove(c)
@@ -257,7 +384,7 @@ class RelayServer:
                 elif c.my_side == "guest" and room.host:
                     peer = room.host
                 if peer is not None:
-                    asyncio.create_task(
+                    room.disconnect_task = asyncio.create_task(
                         self._broadcast_disconnect_with_timeout(
                             peer, room, losing_side, DISCONNECT_GRACE_SECONDS
                         )
@@ -278,58 +405,70 @@ class RelayServer:
         timeout_sec: float,
     ) -> None:
         """V0.4 断线策略：先通知对端暂停 + 倒计时等待，超时判负。
-        这里简化为对端先收到 PEER_DISCONNECT，经过 timeout_sec 后若断线者未重连则
-        对端收到 OPPONENT_WON（对手掉线判负，判断线者输）。
-        注意：V0.4 不做重连恢复，所以 30s 后直接判断线方负。
+        注意：断线者如果在 timeout_sec 内重连（JOIN_ROOM补位），本任务会被 cancel。
+        【鲁棒性】整个协程包最外层 try/except，防止任何异常冒泡到事件循环导致服务器崩溃。
         """
         try:
-            await peer.send({"type": "PEER_DISCONNECT", "grace_seconds": timeout_sec})
-        except Exception:
-            return
-        await asyncio.sleep(timeout_sec)
-        # 检查是否仍在同一房间且对端没回来
-        async with self._lock:
-            still = self.rooms.get(room.code)
-            if still is not room:
-                return
-            lost_came_back = (losing_side == "host" and room.host is not None) or (
-                losing_side == "guest" and room.guest is not None
-            )
-            if lost_came_back:
-                return
-            winner_side = "guest" if losing_side == "host" else "host"
-            # 持久化结果 + 广播
-            record = {
-                "ts": int(time.time()),
-                "room_code": room.code,
-                "winner": winner_side,
-                "seed": room.seed,
-                "host_deck": room.host.deck if room.host else [],
-                "guest_deck": (room.guest.deck if room.guest else []),
-                "reporter_side": "server_timeout",
-                "reason": "disconnect_timeout",
-                "disconnected": losing_side,
-            }
             try:
-                with MATCH_RESULTS_PATH.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                await peer.send({"type": "PEER_DISCONNECT", "grace_seconds": timeout_sec})
+            except Exception:
+                return
+            await asyncio.sleep(timeout_sec)
+            # 检查是否仍在同一房间且对端没回来
+            async with self._lock:
+                still = self.rooms.get(room.code)
+                if still is not room:
+                    return
+                lost_came_back = (losing_side == "host" and room.host is not None) or (
+                    losing_side == "guest" and room.guest is not None
+                )
+                if lost_came_back:
+                    return
+                winner_side = "guest" if losing_side == "host" else "host"
+                # 持久化结果 + 广播
+                record = {
+                    "ts": int(time.time()),
+                    "room_code": room.code,
+                    "winner": winner_side,
+                    "seed": room.seed,
+                    "host_deck": room.host_deck,
+                    "guest_deck": room.guest_deck,
+                    "reporter_side": "server_timeout",
+                    "reason": "disconnect_timeout",
+                    "disconnected": losing_side,
+                }
+                try:
+                    with MATCH_RESULTS_PATH.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
+                timeout_pkt = {
+                    "type": "OPPONENT_DISCONNECTED_WIN",
+                    "winner": winner_side,
+                    "room_code": room.code,
+                }
+                if room.host and winner_side == "host":
+                    try:
+                        await room.host.send(timeout_pkt)
+                    except Exception:
+                        pass
+                if room.guest and winner_side == "guest":
+                    try:
+                        await room.guest.send(timeout_pkt)
+                    except Exception:
+                        pass
+                # 重置 started，避免超时后客机重连触发 RESUME_BATTLE
+                room.started = False
+                room.disconnect_task = None
+        except asyncio.CancelledError:
+            # 断线者在超时之前成功重连 → 正常cancel，忽略
+            raise
+        except Exception as e:
+            print(f"[server] _broadcast_disconnect_with_timeout 异常: {e!r}", file=sys.stderr)
+            try:
+                room.disconnect_task = None
             except Exception:
                 pass
-            timeout_pkt = {
-                "type": "OPPONENT_DISCONNECTED_WIN",
-                "winner": winner_side,
-                "room_code": room.code,
-            }
-            if room.host and winner_side == "host":
-                try:
-                    await room.host.send(timeout_pkt)
-                except Exception:
-                    pass
-            if room.guest and winner_side == "guest":
-                try:
-                    await room.guest.send(timeout_pkt)
-                except Exception:
-                    pass
 
     async def _client_loop(self, c: Client) -> None:
         try:
