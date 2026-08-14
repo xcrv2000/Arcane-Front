@@ -30,7 +30,8 @@ func draw_text_line(canvas: CanvasItem, text: String, rect: Rect2, font_size: in
 
 # 将较长文本拆成两行绘制（按宽度估算截断点）。
 func draw_two_line_text(canvas: CanvasItem, text: String, rect: Rect2, font_size: int, color: Color) -> void:
-	var limit: int = max(8, int(rect.size.x / max(8.0, font_size * 0.72)))
+	# 中文字符通常接近一个字号宽，以字号估算可避免长句溢出详情面板。
+	var limit: int = max(8, int(rect.size.x / max(8.0, font_size * 0.96)))
 	var first: String = text
 	var second: String = ""
 	if text.length() > limit:
@@ -121,6 +122,26 @@ func draw_unit_shape(canvas: CanvasItem, source: Dictionary, center: Vector2, ra
 			center + Vector2(radius * 0.92, radius * 0.72),
 			center + Vector2(-radius * 0.92, radius * 0.72)
 		])
+		var outline: PackedVector2Array = PackedVector2Array(points)
+		outline.append(points[0])
+		canvas.draw_colored_polygon(points, fill)
+		canvas.draw_polyline(outline, stroke, max(1.0, radius * 0.14))
+	elif shape == "diamond":
+		var points: PackedVector2Array = PackedVector2Array([
+			center + Vector2(0.0, -radius),
+			center + Vector2(radius * 0.82, 0.0),
+			center + Vector2(0.0, radius),
+			center + Vector2(-radius * 0.82, 0.0)
+		])
+		var outline: PackedVector2Array = PackedVector2Array(points)
+		outline.append(points[0])
+		canvas.draw_colored_polygon(points, fill)
+		canvas.draw_polyline(outline, stroke, max(1.0, radius * 0.14))
+	elif shape == "hexagon":
+		var points: PackedVector2Array = PackedVector2Array()
+		for index in range(6):
+			var angle: float = -PI * 0.5 + TAU * float(index) / 6.0
+			points.append(center + Vector2(cos(angle), sin(angle)) * radius)
 		var outline: PackedVector2Array = PackedVector2Array(points)
 		outline.append(points[0])
 		canvas.draw_colored_polygon(points, fill)

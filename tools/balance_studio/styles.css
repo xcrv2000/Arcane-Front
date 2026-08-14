@@ -375,6 +375,12 @@ button:disabled {
   background: rgba(229, 103, 94, 0.08);
 }
 
+.status-pill.is-offline {
+  border-color: rgba(215, 168, 75, 0.65);
+  color: var(--amber);
+  background: rgba(215, 168, 75, 0.08);
+}
+
 .editor-form {
   display: grid;
   gap: var(--space-4);
@@ -569,6 +575,12 @@ button:disabled {
   border-color: rgba(229, 103, 94, 0.48);
   background: rgba(229, 103, 94, 0.08);
   color: #f0aaa4;
+}
+
+.warning-item.offline {
+  border-color: rgba(138, 196, 245, 0.42);
+  background: rgba(57, 143, 225, 0.08);
+  color: #b9dcfb;
 }
 
 .empty-state,

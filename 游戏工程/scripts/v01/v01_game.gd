@@ -19,15 +19,19 @@ const Fp = preload("res://scripts/support/fp_math.gd")
 const NetworkClient = preload("res://scripts/networking/network_client.gd")
 const DECK_SAVE_PATH: String = "user://selected_deck.json"
 const CARD_HOTKEYS: Array[Key] = [KEY_Q, KEY_W, KEY_E, KEY_A, KEY_S, KEY_D]
+const REPOSITORY_PAGE_SIZE: int = 8
 
 enum ScreenMode { MAIN_MENU, COMPENDIUM, DECK_BUILDER, ROOM_SETUP, ROOM_WAIT, BATTLE, RESULT }
 
 var screen_mode: int = ScreenMode.MAIN_MENU
 var cards: Array[Dictionary] = []
+var catalog_cards: Array[Dictionary] = []
 var selected_card_ids: Array[String] = []
 var saved_deck_ids: Array[String] = []
 var selected_battle_card_id: String = ""
 var compendium_card_id: String = ""
+var compendium_page: int = 0
+var deck_builder_page: int = 0
 var frontend_status_text: String = ""
 
 var helpers: CanvasHelpers
@@ -67,22 +71,23 @@ var room_setup_back_rect: Rect2 = Rect2()
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	cards = CardCatalog.all_cards()
+	catalog_cards = CardCatalog.all_runtime_cards()
 	helpers = CanvasHelpers.new()
 	helpers.setup(get_theme_default_font())
 	simulator = BattleSimulator.new()
 	task_system = TaskSystem.new()
-	task_system.setup(cards, simulator)
+	task_system.setup(catalog_cards, simulator)
 	simulator.setup(task_system)
 	bot_brain = BotBrain.new()
 	painter = UIPainter.new()
-	painter.setup(helpers, simulator, task_system, cards)
+	painter.setup(helpers, simulator, task_system, cards, catalog_cards)
 	scheduler = LockstepScheduler.new()
 	scheduler.strict_wait = false  # 本地模式，不等待网络
 	scheduler.sides = [Config.PLAYER, Config.BOT]
 	_load_saved_deck()
 	selected_card_ids = saved_deck_ids.duplicate()
-	if not cards.is_empty():
-		compendium_card_id = String(cards[0]["id"])
+	if not catalog_cards.is_empty():
+		compendium_card_id = String(catalog_cards[0]["id"])
 	# 初始化网络客户端（需要一个 Node 挂定时器做帧轮询）
 	_init_networking()
 	queue_redraw()
@@ -364,6 +369,9 @@ func _select_battle_card_by_index(index: int) -> void:
 	var card: Dictionary = task_system.active_card_by_id(side, selected_battle_card_id)
 	var mana_fp: int = simulator.player_mana_fp if side == Config.PLAYER else simulator.bot_mana_fp
 	var cost_fp: int = int(float(card.get("cost", 0.0)) * Config.FP_SCALE_F + 0.5)
+	var cooldown_seconds: float = simulator.card_cooldown_seconds(side, selected_battle_card_id)
+	if cooldown_seconds > 0.0:
+		simulator.push_event("%s仍在冷却（%.1f 秒）。" % [String(card.get("name", selected_battle_card_id)), max(0.1, cooldown_seconds)])
 	if mana_fp < cost_fp:
 		simulator.push_event("%s 费用不足。" % String(card.get("name", selected_battle_card_id)))
 	queue_redraw()
@@ -468,6 +476,15 @@ func _handle_compendium_press(position: Vector2) -> void:
 		screen_mode = ScreenMode.MAIN_MENU
 		queue_redraw()
 		return
+	var page_count: int = max(1, int(ceil(float(catalog_cards.size()) / float(REPOSITORY_PAGE_SIZE))))
+	if painter.page_prev_rect.has_point(position) and compendium_page > 0:
+		compendium_page -= 1
+		queue_redraw()
+		return
+	if painter.page_next_rect.has_point(position) and compendium_page + 1 < page_count:
+		compendium_page += 1
+		queue_redraw()
+		return
 	for raw_card_id in painter.repository_card_rects.keys():
 		var card_id: String = String(raw_card_id)
 		if painter.repository_card_rects[card_id].has_point(position):
@@ -481,6 +498,15 @@ func _handle_deck_builder_press(position: Vector2) -> void:
 		selected_card_ids = saved_deck_ids.duplicate()
 		screen_mode = ScreenMode.MAIN_MENU
 		frontend_status_text = ""
+		queue_redraw()
+		return
+	var page_count: int = max(1, int(ceil(float(cards.size()) / float(REPOSITORY_PAGE_SIZE))))
+	if painter.page_prev_rect.has_point(position) and deck_builder_page > 0:
+		deck_builder_page -= 1
+		queue_redraw()
+		return
+	if painter.page_next_rect.has_point(position) and deck_builder_page + 1 < page_count:
+		deck_builder_page += 1
 		queue_redraw()
 		return
 	if painter.save_deck_rect.has_point(position):
@@ -512,6 +538,9 @@ func _handle_battle_press(position: Vector2) -> void:
 			var card: Dictionary = task_system.active_card_by_id(side, card_id)
 			var cost_fp: int = int(float(card["cost"]) * Config.FP_SCALE_F + 0.5)
 			var mana_fp: int = simulator.player_mana_fp if side == Config.PLAYER else simulator.bot_mana_fp
+			var cooldown_seconds: float = simulator.card_cooldown_seconds(side, card_id)
+			if cooldown_seconds > 0.0:
+				simulator.push_event("%s仍在冷却（%.1f 秒）。" % [card["name"], max(0.1, cooldown_seconds)])
 			if mana_fp < cost_fp:
 				simulator.push_event("%s 费用不足。" % card["name"])
 			queue_redraw()
@@ -527,6 +556,12 @@ func _handle_battle_press(position: Vector2) -> void:
 		var side_to_use: String = Config.PLAYER
 		if online_mode:
 			side_to_use = my_game_side
+		var cooldown_seconds: float = simulator.card_cooldown_seconds(side_to_use, selected_battle_card_id)
+		if cooldown_seconds > 0.0:
+			var cooling_card: Dictionary = task_system.active_card_by_id(side_to_use, selected_battle_card_id)
+			simulator.push_event("%s仍在冷却（%.1f 秒）。" % [cooling_card.get("name", selected_battle_card_id), max(0.1, cooldown_seconds)])
+			queue_redraw()
+			return
 		var cmd: Dictionary = Command.play_card_command_fp(
 			exec_tick,
 			side_to_use,
@@ -591,9 +626,9 @@ func _draw() -> void:
 	if screen_mode == ScreenMode.MAIN_MENU:
 		painter.draw_main_menu(self, saved_deck_ids, frontend_status_text)
 	elif screen_mode == ScreenMode.COMPENDIUM:
-		painter.draw_compendium(self, compendium_card_id)
+		painter.draw_compendium(self, compendium_card_id, compendium_page)
 	elif screen_mode == ScreenMode.DECK_BUILDER:
-		painter.draw_deck_builder(self, selected_card_ids, frontend_status_text)
+		painter.draw_deck_builder(self, selected_card_ids, frontend_status_text, deck_builder_page)
 	elif screen_mode == ScreenMode.ROOM_SETUP:
 		_draw_room_setup()
 		_draw_status_banner()

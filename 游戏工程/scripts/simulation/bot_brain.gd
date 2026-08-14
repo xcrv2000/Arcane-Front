@@ -25,7 +25,7 @@ func reset() -> void:
 	if use_random_deck:
 		_select_random_deck()
 	else:
-		bot_deck_ids = Config.BOT_DECK_IDS.duplicate()
+		bot_deck_ids = _filter_ai_deck_ids(Config.BOT_DECK_IDS)
 	selected_random_ids = bot_deck_ids.duplicate()
 
 
@@ -33,7 +33,8 @@ func reset() -> void:
 func _select_random_deck() -> void:
 	var all_ids: Array[String] = []
 	for card in CardCatalog.all_cards():
-		all_ids.append(String(card["id"]))
+		if bool(card.get("ai_deckable", true)):
+			all_ids.append(String(card["id"]))
 	bot_deck_ids.clear()
 	var pool: Array[String] = all_ids.duplicate()
 	deck_rng.seed = Time.get_ticks_msec()
@@ -41,6 +42,18 @@ func _select_random_deck() -> void:
 		var index: int = deck_rng.randi() % pool.size()
 		bot_deck_ids.append(pool[index])
 		pool.remove_at(index)
+
+
+func _filter_ai_deck_ids(source_ids: Array) -> Array[String]:
+	var eligible_by_id: Dictionary = {}
+	for card in CardCatalog.all_cards():
+		eligible_by_id[String(card["id"])] = bool(card.get("ai_deckable", true))
+	var filtered: Array[String] = []
+	for raw_card_id in source_ids:
+		var card_id: String = String(raw_card_id)
+		if bool(eligible_by_id.get(card_id, false)):
+			filtered.append(card_id)
+	return filtered
 
 
 # 每 tick（固定步长）推进 Bot 思考计时器，到点返回一条出牌命令。
@@ -57,7 +70,7 @@ func update(delta: float, simulator: RefCounted, task_sys: RefCounted, execution
 		bot_play_cursor += 1
 		attempts += 1
 		var card: Dictionary = task_sys.active_card_by_id(Config.BOT, card_id)
-		if card.size() > 0 and simulator.bot_mana() >= float(card["cost"]):
+		if card.size() > 0 and simulator.bot_mana() >= float(card["cost"]) and simulator.card_cooldown_ticks(Config.BOT, card_id) <= 0:
 			var target_position: Vector2 = _choose_bot_position(card, simulator)
 			cmds.append(Command.play_card_command(
 				execution_tick,
@@ -76,6 +89,8 @@ func update(delta: float, simulator: RefCounted, task_sys: RefCounted, execution
 # 为 Bot 即将打出的卡选择落点：法术瞄向敌群/基地，单位走桥分路。
 func _choose_bot_position(card: Dictionary, simulator: RefCounted) -> Vector2:
 	if card["kind"] == "spell":
+		if bool(card.get("cast_own_half_only", false)) or String(card.get("spell_mode", "")) == "death_mana_zone":
+			return Vector2(MapMath.bridge_x(bot_play_cursor), Config.RIVER_Y - 8.0)
 		var cluster: Vector2 = simulator.best_enemy_cluster(Config.BOT, float(card["radius"]))
 		if cluster.x >= 0.0:
 			return cluster

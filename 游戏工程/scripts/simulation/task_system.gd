@@ -197,6 +197,70 @@ func track_unit_hp_change(unit: Dictionary) -> void:
 		_set_task_progress(side, card_id, 1.0)
 
 
+# 衍生侍童入场时，推进“全局召唤数”类任务。
+func track_unit_spawn(side: String, unit: Dictionary) -> void:
+	if not _is_squire(unit) or not task_states.has(side):
+		return
+	var side_tasks: Dictionary = task_states[side]
+	for raw_card_id in side_tasks.keys():
+		var card_id: String = String(raw_card_id)
+		var state: Dictionary = side_tasks[card_id]
+		if bool(state.get("completed", false)):
+			continue
+		var task: Dictionary = card_by_id(card_id).get("task", {})
+		if String(task.get("type", "")) == "squire_summon_count":
+			_increment_task_progress(side, card_id, 1.0)
+
+
+# 单位阵亡时，同时处理己方侍童任务与双方全局阵亡任务。
+func track_unit_death(dead_side: String, unit: Dictionary) -> void:
+	if task_states.has(dead_side) and _is_squire(unit):
+		var own_tasks: Dictionary = task_states[dead_side]
+		for raw_card_id in own_tasks.keys():
+			var card_id: String = String(raw_card_id)
+			var state: Dictionary = own_tasks[card_id]
+			if bool(state.get("completed", false)):
+				continue
+			var task: Dictionary = card_by_id(card_id).get("task", {})
+			if String(task.get("type", "")) != "squire_death_count":
+				continue
+			var watch_unit_id: String = String(task.get("watch_unit_id", ""))
+			if watch_unit_id == "" or watch_unit_id == String(unit.get("card_id", "")):
+				_increment_task_progress(dead_side, card_id, 1.0)
+
+	for raw_side in task_states.keys():
+		var observer_side: String = String(raw_side)
+		var observer_tasks: Dictionary = task_states[observer_side]
+		for raw_card_id in observer_tasks.keys():
+			var card_id: String = String(raw_card_id)
+			var state: Dictionary = observer_tasks[card_id]
+			if bool(state.get("completed", false)):
+				continue
+			var task: Dictionary = card_by_id(card_id).get("task", {})
+			if String(task.get("type", "")) == "all_unit_death_count":
+				_increment_task_progress(observer_side, card_id, 1.0)
+
+
+# 每 tick 同步当前在场侍童数，供“同时存在”任务使用。
+func track_squire_state(side: String, alive_count: int) -> void:
+	if not task_states.has(side):
+		return
+	var side_tasks: Dictionary = task_states[side]
+	for raw_card_id in side_tasks.keys():
+		var card_id: String = String(raw_card_id)
+		var state: Dictionary = side_tasks[card_id]
+		if bool(state.get("completed", false)):
+			continue
+		var task: Dictionary = card_by_id(card_id).get("task", {})
+		if String(task.get("type", "")) == "squire_simultaneous":
+			_set_task_progress(side, card_id, float(alive_count))
+
+
+func _is_squire(unit: Dictionary) -> bool:
+	var tags: Array = unit.get("tags", [])
+	return tags.has("squire")
+
+
 # 单位击杀时，推进 card_kill_count / single_unit_kill_count 类任务。
 func track_unit_kill(source_side: String, source_card_id: String, source_unit_id: int) -> void:
 	if source_card_id == "" or not task_states.has(source_side):
