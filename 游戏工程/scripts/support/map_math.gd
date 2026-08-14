@@ -13,8 +13,10 @@ static func opponent(side: String) -> String:
 	return Config.BOT if side == Config.PLAYER else Config.PLAYER
 
 
-# 返回阵营的中文显示名。
+# 返回阵营的中文显示名。空字符串表示平局。
 static func side_name(side: String) -> String:
+	if side == "":
+		return "平局"
 	return "我方" if side == Config.PLAYER else "Bot"
 
 

@@ -46,14 +46,17 @@ func set_sides(side_list: Array[String]) -> void:
 func enqueue_command(cmd: Dictionary) -> void:
 	var t: int = int(cmd.get("tick", 0))
 	var side: String = String(cmd.get("side", ""))
-	if not pending_commands.has(t):
-		pending_commands[t] = {}
-	pending_commands[t][side] = cmd
-	# CHECKSUM 单独缓存一份供比对
-	if String(cmd.get("type", "")) == "checksum":
+	var cmd_type: String = String(cmd.get("type", ""))
+	# CHECKSUM 命令只存入 received_checksums，不入队 pending_commands
+	# （避免覆盖同 tick 的 PLAY_CARD / NO_OP 命令导致 desync）
+	if cmd_type == "checksum":
 		if not received_checksums.has(t):
 			received_checksums[t] = {}
 		received_checksums[t][side] = int(cmd.get("checksum", 0))
+		return
+	if not pending_commands.has(t):
+		pending_commands[t] = {}
+	pending_commands[t][side] = cmd
 
 
 # 远端命令直接入队（网络层收到时已携带正确的 tick，无需再偏移）。
