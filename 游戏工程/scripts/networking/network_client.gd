@@ -30,6 +30,9 @@ signal opponent_win_by_disconnect(winner: String, room_code: String)
 signal start_match_received(seed: int, my_side: String, my_deck: Array[String], peer_deck: Array[String])
 signal command_received(payload: Dictionary)
 signal result_received(winner: String, room_code: String)
+signal peer_rematch_received()
+signal peer_left_received(who: String)
+signal resume_battle_received(commands: Array, seed: int, my_side: String, my_deck: Array[String], peer_deck: Array[String])
 signal server_error(message: String)
 
 # 配置
@@ -96,6 +99,17 @@ func send_command(cmd_dict: Dictionary) -> void:
 
 func send_result(winner: String, room_code: String) -> void:
 	_send_json({"type": "RESULT", "winner": winner, "room_code": room_code})
+
+
+func send_rematch(my_deck: Array[String]) -> void:
+	var deck_strs: Array[String] = []
+	for c in my_deck:
+		deck_strs.append(String(c))
+	_send_json({"type": "REMATCH", "deck": deck_strs})
+
+
+func send_leave_room() -> void:
+	_send_json({"type": "LEAVE_ROOM"})
 
 
 # —— 内部发送/轮询 ——
@@ -208,6 +222,24 @@ func _handle_line(text: String) -> void:
 				emit_signal("command_received", Dictionary(payload))
 		"RESULT":
 			emit_signal("result_received", String(msg.get("winner", "")), String(msg.get("room_code", "")))
+		"PEER_REMATCH":
+			emit_signal("peer_rematch_received")
+		"PEER_LEFT":
+			emit_signal("peer_left_received", String(msg.get("who", "")))
+		"RESUME_BATTLE":
+			# 主机端收到的是无数据的 RESUME_BATTLE（只需恢复倒计时）
+			# 客机端收到的是带 commands/seed/decks 的 RESUME_BATTLE（需要回放恢复战场）
+			var cmds: Array = []
+			for raw in msg.get("commands", []):
+				if typeof(raw) == TYPE_DICTIONARY:
+					cmds.append(Dictionary(raw))
+			var deck_a: Array[String] = []
+			for raw in msg.get("my_deck", []):
+				deck_a.append(String(raw))
+			var deck_b: Array[String] = []
+			for raw in msg.get("peer_deck", []):
+				deck_b.append(String(raw))
+			emit_signal("resume_battle_received", cmds, int(msg.get("seed", 0)), String(msg.get("my_side", "")), deck_a, deck_b)
 		"ERROR":
 			emit_signal("server_error", String(msg.get("message", "")))
 

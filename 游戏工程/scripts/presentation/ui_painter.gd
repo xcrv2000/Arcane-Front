@@ -33,6 +33,11 @@ var controlled_side: String = Config.PLAYER  # 当前本机玩家在模拟器中
 # V0.4 联机：断线判负时覆盖胜者显示（""=不覆盖，用 simulator.match_winner）
 var override_winner: String = ""
 
+# Issue1/2: RESULT界面状态
+# "normal"=正常再战按钮; "disabled"=暗色不可按(房间已解散); "back_to_room"=回到房间; "rematch_wait"=对方已申请再战
+var result_button_mode: String = "normal"
+var result_rematch_hint: String = ""  # 在RESULT面板上显示的再战提示文字
+
 
 # 注入依赖与卡牌数据。
 func setup(helpers_ref: RefCounted, sim: RefCounted, task_sys: RefCounted, card_list: Array[Dictionary]) -> void:
@@ -611,10 +616,29 @@ func draw_result_overlay(canvas: CanvasItem) -> void:
 		helpers.draw_text_line(canvas, text, Rect2(panel.position + Vector2(18.0, line_y), Vector2(panel.size.x - 36.0, 16.0)), 11, Color(0.78, 0.84, 0.90) if not text.find("进化") >= 0 else Color(0.47, 0.92, 0.72), HORIZONTAL_ALIGNMENT_LEFT)
 		line_y += 16.0
 
+	# Issue1: 显示"对方申请了再战"提示
+	if result_rematch_hint != "":
+		helpers.draw_text_line(canvas, result_rematch_hint, Rect2(panel.position + Vector2(18.0, panel.size.y - 104.0), Vector2(panel.size.x - 36.0, 20.0)), 14, Color(0.72, 0.96, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
+
 	restart_rect = Rect2(panel.position + Vector2(24.0, panel.size.y - 78.0), Vector2((panel.size.x - 58.0) * 0.5, 48.0))
 	deck_rect = Rect2(Vector2(restart_rect.end.x + 10.0, restart_rect.position.y), restart_rect.size)
-	helpers.draw_panel(canvas, restart_rect, Color(0.24, 0.56, 0.88), 7.0, Color(0.58, 0.78, 0.98), 1.5)
-	helpers.draw_text_line(canvas, "再战", restart_rect, 18, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER)
+	# Issue2: 根据按钮模式绘制不同样式
+	match result_button_mode:
+		"disabled":
+			# 房间已解散，暗色不可按
+			helpers.draw_panel(canvas, restart_rect, Color(0.14, 0.16, 0.20, 0.70), 7.0, Color(0.26, 0.28, 0.32), 1.5)
+			helpers.draw_text_line(canvas, "房间已解散", restart_rect, 16, Color(0.50, 0.54, 0.60), HORIZONTAL_ALIGNMENT_CENTER)
+		"back_to_room":
+			# 客机退出，房主可回到房间
+			helpers.draw_panel(canvas, restart_rect, Color(0.24, 0.56, 0.88), 7.0, Color(0.58, 0.78, 0.98), 1.5)
+			helpers.draw_text_line(canvas, "回到房间", restart_rect, 18, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER)
+		_:
+			# 正常再战按钮
+			helpers.draw_panel(canvas, restart_rect, Color(0.24, 0.56, 0.88), 7.0, Color(0.58, 0.78, 0.98), 1.5)
+			var btn_text: String = "再战"
+			if result_rematch_hint != "":
+				btn_text = "再战 ✓"
+			helpers.draw_text_line(canvas, btn_text, restart_rect, 18, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_panel(canvas, deck_rect, Color(0.18, 0.21, 0.25), 7.0, Color(0.36, 0.42, 0.50), 1.5)
 	helpers.draw_text_line(canvas, "主界面", deck_rect, 18, Color(0.90, 0.93, 0.96), HORIZONTAL_ALIGNMENT_CENTER)
 
