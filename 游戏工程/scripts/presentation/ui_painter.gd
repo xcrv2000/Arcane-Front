@@ -7,6 +7,8 @@ const Config = preload("res://scripts/config/game_config.gd")
 const MapMath = preload("res://scripts/support/map_math.gd")
 const CARD_HOTKEY_LABELS: Array[String] = ["Q", "W", "E", "A", "S", "D"]
 const REPOSITORY_PAGE_SIZE: int = 8
+const FRIENDLY_ATTACK_COLOR: Color = Color(0.28, 0.78, 1.0)
+const ENEMY_ATTACK_COLOR: Color = Color(1.0, 0.32, 0.20)
 
 var helpers: RefCounted = null  # CanvasHelpers
 var simulator: RefCounted = null  # BattleSimulator
@@ -367,6 +369,8 @@ func _draw_map(canvas: CanvasItem) -> void:
 	canvas.draw_line(Vector2(board_rect.position.x + 6.0, deploy_line), Vector2(board_rect.end.x - 6.0, deploy_line), Color(0.47, 0.73, 0.96, 0.55), 1.0)
 	helpers.draw_text_line(canvas, "我方单位部署区", Rect2(board_rect.position.x + 8.0, deploy_line + 4.0, board_rect.size.x - 16.0, 18.0), 12, Color(0.60, 0.80, 0.98, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
 
+	for unit in simulator.units:
+		_draw_unit_death_trigger_range(canvas, unit)
 	_draw_base(canvas, Config.BOT)
 	_draw_base(canvas, Config.PLAYER)
 	_draw_clock(canvas)
@@ -374,9 +378,13 @@ func _draw_map(canvas: CanvasItem) -> void:
 		if String(effect.get("mode", "")) == "spell_projectile":
 			_draw_spell_projectile(canvas, effect)
 	for effect in simulator.spell_effects:
-		_draw_spell_effect(canvas, effect)
+		if String(effect.get("mode", "")) != "attack":
+			_draw_spell_effect(canvas, effect)
 	for unit in simulator.units:
 		_draw_unit(canvas, unit)
+	for effect in simulator.spell_effects:
+		if String(effect.get("mode", "")) == "attack":
+			_draw_spell_effect(canvas, effect)
 
 
 func _draw_base(canvas: CanvasItem, side: String) -> void:
@@ -413,6 +421,36 @@ func _draw_spell_effect(canvas: CanvasItem, effect: Dictionary) -> void:
 		float(fp_pos.get("x", int(float(effect.get("pos", Vector2.ZERO).x) * F + 0.5))) / F,
 		float(fp_pos.get("y", int(float(effect.get("pos", Vector2.ZERO).y) * F + 0.5))) / F
 	)
+
+	if String(effect.get("mode", "circle")) == "attack":
+		var attacker_side: String = String(effect.get("side", ""))
+		if attacker_side != "":
+			color = FRIENDLY_ATTACK_COLOR if attacker_side == controlled_side else ENEMY_ATTACK_COLOR
+		var from_logic: Vector2 = Vector2(
+			float(fp_from.get("x", 0)) / F,
+			float(fp_from.get("y", 0)) / F
+		)
+		var start: Vector2 = map_to_screen(from_logic)
+		var end: Vector2 = map_to_screen(pos_logic)
+		var trace_color: Color = color.lightened(0.45)
+		trace_color.a = 0.18 * alpha
+		canvas.draw_line(start, end, trace_color, 5.0, true)
+		trace_color.a = 0.92 * alpha
+		canvas.draw_line(start, end, trace_color, 2.0, true)
+		var flash_radius: float = 4.0 + (1.0 - alpha) * 9.0
+		var flash_color: Color = color.lightened(0.65)
+		flash_color.a = 0.28 * alpha
+		canvas.draw_circle(end, flash_radius, flash_color)
+		flash_color.a = 0.92 * alpha
+		canvas.draw_circle(end, flash_radius, flash_color, false, 2.0)
+		if radius_fp > 0:
+			var area_radius: float = logic_to_pixels(radius_logic)
+			var area_color: Color = color.lightened(0.50)
+			area_color.a = 0.10 * alpha
+			canvas.draw_circle(end, area_radius, area_color)
+			area_color.a = 0.55 * alpha
+			canvas.draw_circle(end, area_radius, area_color, false, 1.5)
+		return
 
 	if String(effect.get("mode", "circle")) == "line":
 		var from_logic: Vector2 = Vector2(
@@ -461,6 +499,23 @@ func _draw_spell_projectile(canvas: CanvasItem, effect: Dictionary) -> void:
 	canvas.draw_circle(head, 5.0, color)
 	canvas.draw_circle(head, 5.0, Color(1.0, 0.97, 0.82), false, 1.5)
 	helpers.draw_text_line(canvas, String(effect.get("label", "")), Rect2(head - Vector2(18.0, 22.0), Vector2(36.0, 16.0)), 12, Color(1.0, 0.97, 0.86), HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_unit_death_trigger_range(canvas: CanvasItem, unit: Dictionary) -> void:
+	var death_buff: Dictionary = unit.get("squire_death_buff", {})
+	var radius_logic: float = float(death_buff.get("radius", 0.0))
+	if radius_logic <= 0.0:
+		return
+	var F: float = preload("res://scripts/config/game_config.gd").FP_SCALE_F
+	var pos_fp: Dictionary = unit.get("pos_fp", {"x": 0, "y": 0})
+	var center: Vector2 = map_to_screen(Vector2(float(int(pos_fp.get("x", 0))) / F, float(int(pos_fp.get("y", 0))) / F))
+	var radius: float = logic_to_pixels(radius_logic)
+	var range_color: Color = unit.get("color", Color.WHITE)
+	range_color = range_color.lightened(0.45)
+	range_color.a = 0.055
+	canvas.draw_circle(center, radius, range_color)
+	range_color.a = 0.30
+	canvas.draw_circle(center, radius, range_color, false, 1.25)
 
 
 func _draw_unit(canvas: CanvasItem, unit: Dictionary) -> void:
