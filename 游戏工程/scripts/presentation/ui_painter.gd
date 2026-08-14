@@ -277,8 +277,17 @@ func _draw_repository_card(canvas: CanvasItem, card: Dictionary, rect: Rect2, fo
 	helpers.draw_text_line(canvas, String(card["name"]), Rect2(rect.position + Vector2(6.0, 84.0), Vector2(rect.size.x - 12.0, 22.0)), 15, Color(0.94, 0.96, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_text_line(canvas, "%d费 · %s" % [int(card["cost"]), String(card["role"])], Rect2(rect.position + Vector2(6.0, 108.0), Vector2(rect.size.x - 12.0, 18.0)), 11, Color(0.63, 0.70, 0.78), HORIZONTAL_ALIGNMENT_CENTER)
 	var evolution: Dictionary = card.get("evolution", {})
-	var footer: String = "衍生单位 · 不可携带" if not bool(card.get("deckable", true)) else "→ %s" % String(evolution.get("name", "未设置"))
-	helpers.draw_text_line(canvas, footer, Rect2(rect.position + Vector2(6.0, rect.size.y - 30.0), Vector2(rect.size.x - 12.0, 18.0)), 11, Color(0.64, 0.76, 0.84) if not bool(card.get("deckable", true)) else Color(0.84, 0.70, 0.40), HORIZONTAL_ALIGNMENT_CENTER)
+	var restriction: String = _catalog_restriction(card)
+	var footer: String = "→ %s" % String(evolution.get("name", "未设置"))
+	var footer_color: Color = Color(0.84, 0.70, 0.40)
+	if restriction == "derivative":
+		footer = "衍生单位 · 不可携带"
+		footer_color = Color(0.58, 0.76, 0.88)
+	elif restriction == "disabled":
+		footer = "当前禁用 · 不可携带"
+		footer_color = Color(0.96, 0.56, 0.42)
+	helpers.draw_text_line(canvas, footer, Rect2(rect.position + Vector2(6.0, rect.size.y - 30.0), Vector2(rect.size.x - 12.0, 18.0)), 11, footer_color, HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_catalog_restriction_badge(canvas, card, rect)
 	if selected:
 		canvas.draw_circle(rect.position + Vector2(rect.size.x - 17.0, 17.0), 9.0, Color(0.35, 0.78, 0.95))
 		helpers.draw_text_line(canvas, "✓", Rect2(rect.position + Vector2(rect.size.x - 26.0, 7.0), Vector2(18.0, 18.0)), 14, Color(0.04, 0.06, 0.08), HORIZONTAL_ALIGNMENT_CENTER)
@@ -293,6 +302,7 @@ func _draw_catalog_detail(canvas: CanvasItem, card: Dictionary, rect: Rect2) -> 
 	helpers.draw_panel(canvas, art_rect, Color(0.07, 0.085, 0.11), 6.0, Color(0.22, 0.27, 0.34), 1.0)
 	if not helpers.draw_card_art_icon(canvas, card, art_rect.get_center(), 126.0, Color.WHITE):
 		helpers.draw_unit_shape(canvas, card, art_rect.get_center(), 34.0, card["color"], Color(0.04, 0.05, 0.07), String(card["short_name"]), 28)
+	_draw_catalog_restriction_badge(canvas, card, rect)
 	var text_x: float = art_rect.end.x + 22.0
 	var text_width: float = rect.end.x - text_x - 18.0
 	helpers.draw_text_line(canvas, String(card["name"]), Rect2(text_x, rect.position.y + 20.0, text_width, 34.0), 27, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_LEFT)
@@ -302,7 +312,7 @@ func _draw_catalog_detail(canvas: CanvasItem, card: Dictionary, rect: Rect2) -> 
 
 	var task: Dictionary = card.get("task", {})
 	var evolution: Dictionary = card.get("evolution", {})
-	if not bool(card.get("deckable", true)):
+	if _catalog_restriction(card) == "derivative":
 		helpers.draw_text_line(canvas, "携带", Rect2(rect.position + Vector2(18.0, 190.0), Vector2(74.0, 22.0)), 15, Color(0.86, 0.70, 0.36), HORIZONTAL_ALIGNMENT_LEFT)
 		helpers.draw_two_line_text(canvas, "衍生单位，不可编入牌组；由其他百骸公国卡牌召唤。", Rect2(rect.position + Vector2(92.0, 188.0), Vector2(rect.size.x - 110.0, 50.0)), 13, Color(0.78, 0.81, 0.85))
 		helpers.draw_text_line(canvas, "进化", Rect2(rect.position + Vector2(18.0, 254.0), Vector2(74.0, 22.0)), 15, Color(0.44, 0.88, 0.66), HORIZONTAL_ALIGNMENT_LEFT)
@@ -313,6 +323,25 @@ func _draw_catalog_detail(canvas: CanvasItem, card: Dictionary, rect: Rect2) -> 
 		helpers.draw_text_line(canvas, "进化", Rect2(rect.position + Vector2(18.0, 254.0), Vector2(74.0, 22.0)), 15, Color(0.44, 0.88, 0.66), HORIZONTAL_ALIGNMENT_LEFT)
 		helpers.draw_text_line(canvas, String(evolution.get("name", "未设置")), Rect2(rect.position + Vector2(92.0, 252.0), Vector2(rect.size.x - 110.0, 22.0)), 15, Color(0.82, 0.90, 0.86), HORIZONTAL_ALIGNMENT_LEFT)
 		helpers.draw_two_line_text(canvas, String(evolution.get("summary", "")), Rect2(rect.position + Vector2(92.0, 278.0), Vector2(rect.size.x - 110.0, 54.0)), 13, Color(0.67, 0.74, 0.78))
+
+
+func _catalog_restriction(card: Dictionary) -> String:
+	if bool(card.get("deckable", true)):
+		return ""
+	var tags: Array = card.get("tags", [])
+	return "derivative" if tags.has("derivative") else "disabled"
+
+
+func _draw_catalog_restriction_badge(canvas: CanvasItem, card: Dictionary, rect: Rect2) -> void:
+	var restriction: String = _catalog_restriction(card)
+	if restriction == "":
+		return
+	var label: String = "衍生" if restriction == "derivative" else "禁用"
+	var fill: Color = Color(0.18, 0.34, 0.44) if restriction == "derivative" else Color(0.48, 0.16, 0.12)
+	var stroke: Color = Color(0.45, 0.76, 0.92) if restriction == "derivative" else Color(1.0, 0.48, 0.30)
+	var badge_rect: Rect2 = Rect2(rect.end.x - 62.0, rect.position.y + 8.0, 54.0, 23.0)
+	helpers.draw_panel(canvas, badge_rect, fill, 5.0, stroke, 1.5)
+	helpers.draw_text_line(canvas, label, badge_rect, 12, Color(0.96, 0.97, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _card_stats_text(card: Dictionary) -> String:

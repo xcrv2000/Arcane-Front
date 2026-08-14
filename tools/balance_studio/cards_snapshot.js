@@ -108,6 +108,12 @@ window.__BALANCE_STUDIO_DATA__ = {
       "applies_to": "带弹道的法术",
       "notes": "大于 0 时从施法方基地飞向目标点，并在抵达后结算法术；0 或未设置时即时结算。"
     },
+    "deckable": {
+      "label": "玩家可携带",
+      "unit": "布尔值",
+      "applies_to": "全部卡牌与衍生单位",
+      "notes": "默认为 true；显式设为 false 时仍保留在图鉴与运行时目录，但不会进入玩家牌组仓库、牌组存档或出战牌组。"
+    },
     "ai_deckable": {
       "label": "Bot 可携带",
       "unit": "布尔值",
@@ -665,6 +671,7 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "全图侍童召唤",
       "kind": "spell",
       "faction": "百骸公国",
+      "deckable": false,
       "cost": 4,
       "damage": 0.0,
       "base_damage": 0.0,
@@ -674,7 +681,7 @@ window.__BALANCE_STUDIO_DATA__ = {
       "summon_count": 1,
       "summon_formation": "center",
       "color": "#e2c878",
-      "trial_note": "百骸公国试调数值；可在全图目标点召唤启明侍童。",
+      "trial_note": "当前因强度过高被禁用，无法编入牌组；卡牌仍保留在图鉴中。原效果为在全图目标点召唤启明侍童。",
       "task": {
         "type": "squire_summon_count",
         "summary": "己方全局累计召唤 6 名侍童。",

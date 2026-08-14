@@ -2,11 +2,21 @@ extends RefCounted
 
 const CARD_DATA_PATH: String = "res://data/cards.json"
 
+# 主卡目录包含当前禁用卡，供图鉴、任务定义与运行时查找使用。
 static func all_cards() -> Array[Dictionary]:
 	var cards: Array[Dictionary] = _load_card_group("cards")
 	if cards.is_empty():
 		push_error("CardCatalog did not load any cards from %s." % CARD_DATA_PATH)
 	return cards
+
+
+# 可编辑牌组、牌组存档与 Bot 只能使用显式允许携带的主卡。
+static func deckable_cards() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for card in all_cards():
+		if bool(card.get("deckable", true)):
+			result.append(card)
+	return result
 
 
 # 衍生单位可在图鉴与对局中使用，但不进入可编辑牌组的卡池。

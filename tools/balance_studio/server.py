@@ -97,6 +97,8 @@ def validate_card_data(data: Any) -> None:
         require_number(card, "cost", card_id, minimum=0)
         require_text(card, "role", card_id)
         require_text(card, "trial_note", card_id)
+        if "deckable" in card and not isinstance(card["deckable"], bool):
+            raise ValueError(f"{card_id}.deckable 必须是布尔值。")
 
         if kind == "unit":
             for field in ("count", "hp", "damage", "attack_cooldown", "range", "speed", "radius"):
@@ -156,6 +158,8 @@ def generate_designer_doc(data: dict[str, Any]) -> str:
     fields = data.get("field_definitions", {})
     cards = data.get("cards", [])
     derivatives = data.get("derivative_units", [])
+    deckable_cards = [card for card in cards if card.get("deckable", True)]
+    disabled_cards = [card for card in cards if not card.get("deckable", True)]
     radius_scale = float(rules.get("unit_radius_scale", 2.0))
 
     lines: list[str] = [
@@ -374,7 +378,7 @@ def generate_designer_doc(data: dict[str, Any]) -> str:
         [
             "## 任务与进化规则",
             "",
-            f"- 当前 {len(cards)} 张可携带卡都有任务和进化；{len(derivatives)} 个衍生单位不可编入牌组。",
+            f"- 当前主卡目录共 {len(cards)} 张：{len(deckable_cards)} 张可携带、{len(disabled_cards)} 张禁用；{len(derivatives)} 个衍生单位不可编入牌组。主卡均保留任务和进化定义。",
             "- 每张卡默认 1 个任务。",
             "- V0.2 暂时不做局外任务配置部分。",
             "- V0.2 进化先做 1 层。",

@@ -77,7 +77,7 @@ var room_setup_back_rect: Rect2 = Rect2()
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
-	cards = CardCatalog.all_cards()
+	cards = CardCatalog.deckable_cards()
 	catalog_cards = CardCatalog.all_runtime_cards()
 	helpers = CanvasHelpers.new()
 	helpers.setup(get_theme_default_font())
