@@ -10,7 +10,8 @@
     dirty: false,
     saving: false,
     error: "",
-    apiBase: ""
+    apiBase: "",
+    offline: false
   };
 
   const defaultApiBases = Array.from({ length: 20 }, (_, index) => `http://127.0.0.1:${8765 + index}`);
@@ -140,7 +141,13 @@
   async function loadData() {
     state.error = "";
     state.dirty = false;
+    state.offline = false;
     renderLoading();
+    if (shouldLoadOfflineFirst()) {
+      loadOfflineSnapshot();
+      render();
+      return;
+    }
     try {
       const payload = await apiRequest("/api/cards");
       state.data = payload.data;
@@ -148,8 +155,13 @@
       state.designerDocPath = payload.designer_doc_path || "开发文档/设计/设计师文档.md";
       state.selectedId = firstCardId();
       state.compareId = secondCardId();
+      state.offline = false;
       showToast("已读取权威 JSON。");
     } catch (error) {
+      if (loadOfflineSnapshot()) {
+        render();
+        return;
+      }
       state.error = `无法读取卡牌数据：${error.message}`;
       showToast(state.error);
     }
@@ -163,6 +175,15 @@
     state.saving = true;
     renderToolbar();
     try {
+      if (state.offline) {
+        const exported = await exportOfflineJson();
+        if (exported) {
+          state.dirty = false;
+        }
+        state.saving = false;
+        render();
+        return;
+      }
       const payload = await apiRequest("/api/cards", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -174,7 +195,11 @@
       }
       showToast(`已保存，并同步 ${payload.designer_doc_path || state.designerDocPath}。`);
     } catch (error) {
-      showToast(`保存失败：${error.message}`);
+      if (state.offline && error.name === "AbortError") {
+        showToast("已取消导出。");
+      } else {
+        showToast(`${state.offline ? "导出" : "保存"}失败：${error.message}`);
+      }
     }
     state.saving = false;
     render();
@@ -193,7 +218,7 @@
         }
         state.apiBase = apiBase;
         if (apiBase) {
-          localStorage.setItem("balanceStudioApiBase", apiBase);
+          setSavedApiBase(apiBase);
         }
         return payload;
       } catch (error) {
@@ -208,12 +233,116 @@
   function apiCandidates() {
     const params = new URLSearchParams(window.location.search);
     const configured = params.get("api");
-    const saved = localStorage.getItem("balanceStudioApiBase");
+    const saved = getSavedApiBase();
     const currentOrigin = window.location.protocol === "http:" || window.location.protocol === "https:"
       ? window.location.origin
       : "";
-    const values = [state.apiBase, configured, saved, currentOrigin, ...defaultApiBases].filter(Boolean);
+    const values = [state.apiBase, configured, saved, currentOrigin, ...defaultApiBases]
+      .map(normalizeApiBase)
+      .filter(Boolean);
     return [...new Set(values)];
+  }
+
+  function getSavedApiBase() {
+    try {
+      const saved = normalizeApiBase(localStorage.getItem("balanceStudioApiBase") || "");
+      if (!saved) {
+        localStorage.removeItem("balanceStudioApiBase");
+      }
+      return saved;
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function setSavedApiBase(apiBase) {
+    const normalized = normalizeApiBase(apiBase);
+    if (!normalized) {
+      return;
+    }
+    try {
+      localStorage.setItem("balanceStudioApiBase", normalized);
+    } catch (error) {
+      // 部分浏览器会限制 file:// 下的 localStorage；接口成功即可，不让缓存失败中断工具。
+    }
+  }
+
+  function normalizeApiBase(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return "";
+    }
+    try {
+      const url = new URL(text);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return "";
+      }
+      return url.origin;
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function shouldLoadOfflineFirst() {
+    const params = new URLSearchParams(window.location.search);
+    return window.location.protocol === "file:" && !params.has("api") && Boolean(window.__BALANCE_STUDIO_DATA__);
+  }
+
+  function loadOfflineSnapshot() {
+    const snapshot = window.__BALANCE_STUDIO_DATA__;
+    if (!snapshot || !Array.isArray(snapshot.cards) || !snapshot.cards.length) {
+      return false;
+    }
+
+    state.data = cloneData(snapshot);
+    state.sourcePath = window.__BALANCE_STUDIO_SOURCE__ || "tools/balance_studio/cards_snapshot.js（离线快照）";
+    state.designerDocPath = "离线模式不会直接同步设计师文档";
+    state.selectedId = firstCardId();
+    state.compareId = secondCardId();
+    state.error = "";
+    state.apiBase = "";
+    state.offline = true;
+    showToast("已加载离线快照；修改后请用“导出 JSON”。");
+    return true;
+  }
+
+  async function exportOfflineJson() {
+    const exportedData = cloneData(state.data);
+    exportedData.updated_at = new Date().toISOString().slice(0, 10);
+    const text = `${JSON.stringify(exportedData, null, 2)}\n`;
+
+    if (window.showSaveFilePicker && window.isSecureContext) {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: "cards.json",
+        types: [
+          {
+            description: "Arcane Frontline card data",
+            accept: { "application/json": [".json"] }
+          }
+        ]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+    } else {
+      downloadText("cards.json", text);
+    }
+
+    state.data.updated_at = exportedData.updated_at;
+    showToast("已导出 cards.json；替换 游戏工程/data/cards.json 后提交。");
+    return true;
+  }
+
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   function renderLoading() {
@@ -250,10 +379,10 @@
       return;
     }
     const dirtyText = state.dirty ? "，有未保存修改" : "";
-    const apiText = state.apiBase ? ` · 接口：${state.apiBase}` : "";
+    const apiText = state.offline ? " · 离线快照模式" : state.apiBase ? ` · 接口：${state.apiBase}` : "";
     dom.sourceLine.textContent = state.sourcePath ? `源：${state.sourcePath}${apiText}${dirtyText}` : "加载数据中";
     dom.saveBtn.disabled = !state.dirty || state.saving || !state.data;
-    dom.saveBtn.textContent = state.saving ? "保存中" : "保存";
+    dom.saveBtn.textContent = state.saving ? (state.offline ? "导出中" : "保存中") : (state.offline ? "导出 JSON" : "保存");
   }
 
   function renderErrorState() {
@@ -261,8 +390,8 @@
     dom.editorHeader.innerHTML = "";
     dom.editorForm.innerHTML = `
       <div class="empty-state error-guide">
-        <strong>本地服务未返回卡牌数据</strong>
-        <span>请不要直接双击打开 HTML。先启动本地服务，再用浏览器访问服务地址。</span>
+        <strong>未找到本地服务，也没有可用离线快照</strong>
+        <span>直接双击 index.html 时，页面会读取同目录的 cards_snapshot.js；如果这个提示出现，说明离线快照缺失或加载失败。</span>
         <code>tools\\balance_studio\\start_balance_studio.bat</code>
         <span>或在仓库根目录执行：</span>
         <code>python tools\\balance_studio\\server.py --open</code>
@@ -319,8 +448,8 @@
       return;
     }
 
-    const pillClass = state.error ? "is-error" : state.dirty ? "is-dirty" : "";
-    const statusText = state.error ? "校验错误" : state.dirty ? "未保存" : "已同步";
+    const pillClass = state.error ? "is-error" : state.offline ? "is-offline" : state.dirty ? "is-dirty" : "";
+    const statusText = state.error ? "校验错误" : state.dirty ? (state.offline ? "待导出" : "未保存") : state.offline ? "离线快照" : "已同步";
     dom.editorHeader.innerHTML = `
       <div class="section-title">
         <h2>${escapeHtml(card.name)}</h2>
@@ -633,6 +762,12 @@
 
   function renderWarnings() {
     const warnings = validationWarnings();
+    if (state.offline) {
+      warnings.unshift({
+        level: "offline",
+        text: "当前为双击打开的离线快照模式：可查看、编辑和计算；导出 JSON 后需要手动替换 游戏工程/data/cards.json。"
+      });
+    }
     if (!warnings.length) {
       dom.warningsPanel.innerHTML = `
         <section class="warning-section">
@@ -724,7 +859,7 @@
   }
 
   function evolvedCard(card) {
-    const evolved = structuredClone(card);
+    const evolved = cloneData(card);
     if (!evolved.evolution || !evolved.evolution.overrides) {
       return evolved;
     }
@@ -906,6 +1041,13 @@
 
   function safeColor(value) {
     return /^#[0-9a-f]{6}$/i.test(String(value)) ? value : "#8ac4f5";
+  }
+
+  function cloneData(value) {
+    if (typeof structuredClone === "function") {
+      return structuredClone(value);
+    }
+    return JSON.parse(JSON.stringify(value));
   }
 
   function showToast(message) {

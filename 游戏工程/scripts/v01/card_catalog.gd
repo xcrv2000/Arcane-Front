@@ -3,12 +3,24 @@ extends RefCounted
 const CARD_DATA_PATH: String = "res://data/cards.json"
 
 static func all_cards() -> Array[Dictionary]:
-	var cards: Array[Dictionary] = _load_cards_from_json()
+	var cards: Array[Dictionary] = _load_card_group("cards")
 	if cards.is_empty():
 		push_error("CardCatalog did not load any cards from %s." % CARD_DATA_PATH)
 	return cards
 
-static func _load_cards_from_json() -> Array[Dictionary]:
+
+# 衍生单位可在图鉴与对局中使用，但不进入可编辑牌组的卡池。
+static func derivative_units() -> Array[Dictionary]:
+	return _load_card_group("derivative_units")
+
+
+static func all_runtime_cards() -> Array[Dictionary]:
+	var result: Array[Dictionary] = all_cards()
+	result.append_array(derivative_units())
+	return result
+
+
+static func _load_card_group(group_name: String) -> Array[Dictionary]:
 	if not FileAccess.file_exists(CARD_DATA_PATH):
 		push_error("Card data file is missing: %s." % CARD_DATA_PATH)
 		return []
@@ -25,12 +37,12 @@ static func _load_cards_from_json() -> Array[Dictionary]:
 
 	var raw_cards: Variant = []
 	if typeof(parsed) == TYPE_DICTIONARY:
-		raw_cards = parsed.get("cards", [])
-	elif typeof(parsed) == TYPE_ARRAY:
+		raw_cards = parsed.get(group_name, [])
+	elif typeof(parsed) == TYPE_ARRAY and group_name == "cards":
 		raw_cards = parsed
 
 	if typeof(raw_cards) != TYPE_ARRAY:
-		push_error("Card data JSON must contain a cards array: %s." % CARD_DATA_PATH)
+		push_error("Card data JSON must contain a %s array: %s." % [group_name, CARD_DATA_PATH])
 		return []
 
 	var cards: Array[Dictionary] = []
