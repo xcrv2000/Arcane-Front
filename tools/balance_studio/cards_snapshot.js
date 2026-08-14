@@ -108,6 +108,12 @@ window.__BALANCE_STUDIO_DATA__ = {
       "applies_to": "带弹道的法术",
       "notes": "大于 0 时从施法方基地飞向目标点，并在抵达后结算法术；0 或未设置时即时结算。"
     },
+    "tags": {
+      "label": "标签",
+      "unit": "字符串数组",
+      "applies_to": "全部卡牌与衍生单位",
+      "notes": "一张卡可同时拥有多个标签；系列、机制与衍生关系共用该数组，后续系统通过精确字符串查询。进化形态默认继承基础卡标签。"
+    },
     "deckable": {
       "label": "玩家可携带",
       "unit": "布尔值",
@@ -140,6 +146,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "short_name": "群",
       "role": "数量杂兵",
       "kind": "unit",
+      "tags": [
+        "星间飞行"
+      ],
       "cost": 2,
       "count": 4,
       "hp": 24.0,
@@ -174,6 +183,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "short_name": "盾",
       "role": "肉盾杂兵",
       "kind": "unit",
+      "tags": [
+        "星间飞行"
+      ],
       "cost": 3,
       "count": 2,
       "hp": 92.0,
@@ -209,6 +221,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "short_name": "旋",
       "role": "近战 AOE",
       "kind": "unit",
+      "tags": [
+        "星间飞行"
+      ],
       "cost": 4,
       "count": 1,
       "hp": 128.0,
@@ -246,6 +261,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "short_name": "频",
       "role": "频率远程",
       "kind": "unit",
+      "tags": [
+        "星间飞行"
+      ],
       "cost": 3,
       "count": 1,
       "hp": 54.0,
@@ -281,6 +299,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "short_name": "火",
       "role": "伤害远程",
       "kind": "unit",
+      "tags": [
+        "星间飞行"
+      ],
       "cost": 4,
       "count": 1,
       "hp": 50.0,
@@ -315,6 +336,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "short_name": "巨",
       "role": "巨型单位",
       "kind": "unit",
+      "tags": [
+        "星间飞行"
+      ],
       "cost": 6,
       "count": 1,
       "hp": 270.0,
@@ -352,6 +376,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "short_name": "矢",
       "role": "对单法术",
       "kind": "spell",
+      "tags": [
+        "星间飞行"
+      ],
       "cost": 3,
       "damage": 82.0,
       "base_damage": 33.0,
@@ -385,6 +412,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "short_name": "陨",
       "role": "对群法术",
       "kind": "spell",
+      "tags": [
+        "星间飞行"
+      ],
       "cost": 4,
       "damage": 46.0,
       "base_damage": 24.0,
@@ -417,6 +447,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "侍童远程",
       "kind": "unit",
       "faction": "百骸公国",
+      "tags": [
+        "百骸公国"
+      ],
       "cost": 3,
       "count": 1,
       "hp": 90.0,
@@ -467,6 +500,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "侍童成长前排",
       "kind": "unit",
       "faction": "百骸公国",
+      "tags": [
+        "百骸公国"
+      ],
       "cost": 5,
       "count": 1,
       "hp": 180.0,
@@ -516,6 +552,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "侍童光环巨型单位",
       "kind": "unit",
       "faction": "百骸公国",
+      "tags": [
+        "百骸公国"
+      ],
       "cost": 8,
       "count": 1,
       "hp": 360.0,
@@ -567,6 +606,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "持续召唤者",
       "kind": "unit",
       "faction": "百骸公国",
+      "tags": [
+        "百骸公国"
+      ],
       "cost": 6,
       "count": 1,
       "hp": 100.0,
@@ -625,6 +667,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "侍童成长远程",
       "kind": "unit",
       "faction": "百骸公国",
+      "tags": [
+        "百骸公国"
+      ],
       "cost": 4,
       "count": 1,
       "hp": 65.0,
@@ -671,6 +716,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "全图侍童召唤",
       "kind": "spell",
       "faction": "百骸公国",
+      "tags": [
+        "百骸公国"
+      ],
       "deckable": false,
       "cost": 4,
       "damage": 0.0,
@@ -705,6 +753,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "己方铺场召唤",
       "kind": "spell",
       "faction": "百骸公国",
+      "tags": [
+        "百骸公国"
+      ],
       "cost": 3,
       "damage": 0.0,
       "base_damage": 0.0,
@@ -740,6 +791,9 @@ window.__BALANCE_STUDIO_DATA__ = {
       "role": "阵亡回费法术",
       "kind": "spell",
       "faction": "百骸公国",
+      "tags": [
+        "百骸公国"
+      ],
       "cost": 2,
       "damage": 0.0,
       "base_damage": 0.0,
@@ -788,6 +842,7 @@ window.__BALANCE_STUDIO_DATA__ = {
       "radius": 0.65,
       "target_base_only": true,
       "tags": [
+        "百骸公国",
         "squire",
         "book_squire",
         "derivative"
@@ -817,6 +872,7 @@ window.__BALANCE_STUDIO_DATA__ = {
       "radius": 0.6,
       "target_base_only": true,
       "tags": [
+        "百骸公国",
         "squire",
         "sword_squire",
         "derivative"
@@ -843,6 +899,7 @@ window.__BALANCE_STUDIO_DATA__ = {
       "radius": 0.75,
       "target_base_only": true,
       "tags": [
+        "百骸公国",
         "squire",
         "dawn_squire",
         "derivative"

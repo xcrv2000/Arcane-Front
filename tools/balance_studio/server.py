@@ -97,6 +97,7 @@ def validate_card_data(data: Any) -> None:
         require_number(card, "cost", card_id, minimum=0)
         require_text(card, "role", card_id)
         require_text(card, "trial_note", card_id)
+        validate_tags(card, card_id)
         if "deckable" in card and not isinstance(card["deckable"], bool):
             raise ValueError(f"{card_id}.deckable 必须是布尔值。")
 
@@ -138,6 +139,7 @@ def validate_card_data(data: Any) -> None:
             require_number(unit, field, unit_id, minimum=0)
         for field in ("name", "short_name", "role", "trial_note", "shape"):
             require_text(unit, field, unit_id)
+        validate_tags(unit, unit_id)
 
 
 def require_text(source: dict[str, Any], field: str, label: str) -> None:
@@ -151,6 +153,17 @@ def require_number(source: dict[str, Any], field: str, label: str, minimum: floa
         raise ValueError(f"{label}.{field} 必须是数字。")
     if minimum is not None and float(value) < minimum:
         raise ValueError(f"{label}.{field} 不能小于 {minimum}。")
+
+
+def validate_tags(source: dict[str, Any], label: str) -> None:
+    tags = source.get("tags")
+    if not isinstance(tags, list) or not tags or any(not isinstance(tag, str) for tag in tags):
+        raise ValueError(f"{label}.tags 必须是非空字符串数组。")
+    normalized = [tag.strip() for tag in tags]
+    if any(not tag for tag in normalized):
+        raise ValueError(f"{label}.tags 不能包含空标签。")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{label}.tags 不能包含重复标签。")
 
 
 def generate_designer_doc(data: dict[str, Any]) -> str:
@@ -227,8 +240,8 @@ def generate_designer_doc(data: dict[str, Any]) -> str:
             "",
             "## 卡牌总表：生物",
             "",
-            "| 卡牌 | 定位 | 费用 | 数量 | 生命 | 攻击力 | 攻击间隔 | 单体 DPS | 整卡 DPS | 总生命 | 射程 | 速度 | 基础半径 | 实战半径 | 目标规则 |",
-            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            "| 卡牌 | 标签 | 定位 | 费用 | 数量 | 生命 | 攻击力 | 攻击间隔 | 单体 DPS | 整卡 DPS | 总生命 | 射程 | 速度 | 基础半径 | 实战半径 | 目标规则 |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     for card in unit_cards:
@@ -239,9 +252,10 @@ def generate_designer_doc(data: dict[str, Any]) -> str:
         if card.get("aoe_radius"):
             target_rule += "，攻击附带范围伤害"
         lines.append(
-            "| %s | %s | %s | %s | %s | %s | %s 秒 | %s | %s | %s | %s | %s | %s | %s | %s |"
+            "| %s | %s | %s | %s | %s | %s | %s | %s 秒 | %s | %s | %s | %s | %s | %s | %s | %s |"
             % (
                 card.get("name", ""),
+                "、".join(card.get("tags", [])),
                 card.get("role", ""),
                 fmt(card.get("cost", 0)),
                 fmt(card.get("count", 0)),
@@ -264,17 +278,18 @@ def generate_designer_doc(data: dict[str, Any]) -> str:
             "",
             "## 卡牌总表：法术",
             "",
-            "| 卡牌 | 定位 | 费用 | 对单位伤害 | 对基地伤害 | 伤害/费 | 基地伤害/费 | 范围半径 | 覆盖面积 | 模式 | 说明 |",
-            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+            "| 卡牌 | 标签 | 定位 | 费用 | 对单位伤害 | 对基地伤害 | 伤害/费 | 基地伤害/费 | 范围半径 | 覆盖面积 | 模式 | 说明 |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
         ]
     )
     for card in spell_cards:
         radius = float(card.get("radius", 0))
         area = math.pi * radius * radius
         lines.append(
-            "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |"
+            "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |"
             % (
                 card.get("name", ""),
+                "、".join(card.get("tags", [])),
                 card.get("role", ""),
                 fmt(card.get("cost", 0)),
                 fmt(card.get("damage", 0)),
@@ -293,15 +308,16 @@ def generate_designer_doc(data: dict[str, Any]) -> str:
             "",
             "## 衍生单位（不可携带）",
             "",
-            "| 单位 | 费用价值 | 生命 | 攻击力 | 攻击间隔 | 射程 | 速度 | 规则 |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            "| 单位 | 标签 | 费用价值 | 生命 | 攻击力 | 攻击间隔 | 射程 | 速度 | 规则 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     for unit in derivatives:
         lines.append(
-            "| %s | %s | %s | %s | %s 秒 | %s | %s | %s |"
+            "| %s | %s | %s | %s | %s | %s 秒 | %s | %s | %s |"
             % (
                 unit.get("name", ""),
+                "、".join(unit.get("tags", [])),
                 fmt(unit.get("cost", 0)),
                 fmt(unit.get("hp", 0)),
                 fmt(unit.get("damage", 0)),
@@ -367,6 +383,7 @@ def generate_designer_doc(data: dict[str, Any]) -> str:
             [
                 f"### {card.get('name', '')}",
                 "",
+                f"- 标签：{'、'.join(card.get('tags', []))}",
                 f"- 用途：{card.get('trial_note', '')}",
                 f"- 任务：{card.get('task', {}).get('summary', '')}",
                 f"- 进化：{card.get('evolution', {}).get('name', '')}，{card.get('evolution', {}).get('summary', '')}",

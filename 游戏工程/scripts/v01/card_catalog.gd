@@ -30,6 +30,19 @@ static func all_runtime_cards() -> Array[Dictionary]:
 	return result
 
 
+static func has_tag(card: Dictionary, tag: String) -> bool:
+	return card.get("tags", []).has(tag)
+
+
+static func cards_with_tag(tag: String, include_derivatives: bool = true) -> Array[Dictionary]:
+	var source: Array[Dictionary] = all_runtime_cards() if include_derivatives else all_cards()
+	var result: Array[Dictionary] = []
+	for card in source:
+		if has_tag(card, tag):
+			result.append(card)
+	return result
+
+
 static func _load_card_group(group_name: String) -> Array[Dictionary]:
 	if not FileAccess.file_exists(CARD_DATA_PATH):
 		push_error("Card data file is missing: %s." % CARD_DATA_PATH)
@@ -66,6 +79,12 @@ static func _load_card_group(group_name: String) -> Array[Dictionary]:
 
 static func _normalize_card(card: Dictionary) -> void:
 	card["color"] = _color_from_value(card.get("color", "#ffffff"))
+	var normalized_tags: Array[String] = []
+	for raw_tag in card.get("tags", []):
+		var tag: String = String(raw_tag).strip_edges()
+		if tag != "" and not normalized_tags.has(tag):
+			normalized_tags.append(tag)
+	card["tags"] = normalized_tags
 
 	var evolution: Dictionary = card.get("evolution", {})
 	if evolution.is_empty():

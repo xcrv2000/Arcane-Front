@@ -307,8 +307,10 @@ func _draw_catalog_detail(canvas: CanvasItem, card: Dictionary, rect: Rect2) -> 
 	var text_width: float = rect.end.x - text_x - 18.0
 	helpers.draw_text_line(canvas, String(card["name"]), Rect2(text_x, rect.position.y + 20.0, text_width, 34.0), 27, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_LEFT)
 	helpers.draw_text_line(canvas, "%d费 · %s · %s" % [int(card["cost"]), String(card["role"]), "单位" if String(card["kind"]) == "unit" else "法术"], Rect2(text_x, rect.position.y + 60.0, text_width, 22.0), 14, Color(0.67, 0.75, 0.84), HORIZONTAL_ALIGNMENT_LEFT)
-	helpers.draw_two_line_text(canvas, _card_stats_text(card), Rect2(text_x, rect.position.y + 92.0, text_width, 48.0), 13, Color(0.80, 0.84, 0.88))
-	helpers.draw_two_line_text(canvas, String(card.get("trial_note", "")), Rect2(text_x, rect.position.y + 142.0, text_width, 44.0), 12, Color(0.60, 0.67, 0.74))
+	var tags_text: String = "标签：%s" % " / ".join(card.get("tags", []))
+	helpers.draw_two_line_text(canvas, tags_text, Rect2(text_x, rect.position.y + 84.0, text_width, 30.0), 11, Color(0.54, 0.79, 0.94))
+	helpers.draw_two_line_text(canvas, _card_stats_text(card), Rect2(text_x, rect.position.y + 114.0, text_width, 34.0), 12, Color(0.80, 0.84, 0.88))
+	helpers.draw_two_line_text(canvas, String(card.get("trial_note", "")), Rect2(text_x, rect.position.y + 148.0, text_width, 38.0), 11, Color(0.60, 0.67, 0.74))
 
 	var task: Dictionary = card.get("task", {})
 	var evolution: Dictionary = card.get("evolution", {})
