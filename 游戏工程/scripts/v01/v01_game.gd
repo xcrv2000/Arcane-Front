@@ -172,6 +172,9 @@ func _init_networking() -> void:
 #   3) advance_time(TICK_DT) → check_mana → update_units → 法术特效 → 进化闪光 → 胜负切换
 #   4) 若 tick 为 DESYNC_CHECK_INTERVAL 倍数：生成双方 CHECKSUM 命令并验证
 func _process(delta: float) -> void:
+	# 网络轮询：每帧直接 poll（替代 Timer 的 0.033s 延迟，确保对端命令及时接收）
+	if net != null and net.is_attached():
+		net.poll()
 	# 断线倒计时在任何界面下都需要更新
 	if disconnect_countdown > 0.0:
 		_tick_disconnect_countdown(delta)
@@ -185,17 +188,17 @@ func _process(delta: float) -> void:
 				break  # 等待命令，暂停推进
 
 		if not simulator.running:
-			# 联机：结束时通过服务器同步结果
-			if online_mode and net != null:
+			# 联机：正常结束时通过服务器同步结果；desync/异常结束不主动上报（避免假平局）
+			if online_mode and net != null and not scheduler.desynced:
 				var w: String = simulator.winner_side()
 				var report_side: String = ""
 				if w == my_game_side:
 					report_side = my_side
 				elif w == peer_game_side:
 					report_side = peer_game_side_for_report()
-				if report_side == "":
-					report_side = "draw"
-				net.send_result(report_side, room_code)
+				# 只有正常产生胜者才上报；空 winner 属于异常情况（如被外部置 running=false），不报 draw
+				if report_side != "":
+					net.send_result(report_side, room_code)
 			screen_mode = ScreenMode.RESULT
 			queue_redraw()
 			return
@@ -215,14 +218,8 @@ func _step_one_tick() -> bool:
 	var tick: int = scheduler.current_tick + 1
 	var exec_tick: int = tick
 
-	# 1) 联机模式：确保自己每 tick 都有命令（NO_OP 占位），否则 strict_wait 会卡住
-	if online_mode:
-		if not scheduler.has_side_command_for_tick(tick, my_game_side):
-			var noop_cmd: Dictionary = Command.no_op_command(tick, my_game_side)
-			scheduler.enqueue_command(noop_cmd)
-			_send_local_command_net(noop_cmd)
-	else:
-		# 非联机模式下 Bot 思考（联机模式对端是真人，命令通过网络层入队）
+	# 1) 非联机模式 Bot 思考（联机模式命令已预发，不需在此补 NO_OP）
+	if not online_mode:
 		var bot_cmds: Array[Dictionary] = bot_brain.update(
 			Config.TICK_DT, simulator, task_system, exec_tick
 		)
@@ -247,6 +244,16 @@ func _step_one_tick() -> bool:
 
 	scheduler.current_tick = tick
 
+	# 3.5) 联机模式：预发未来 tick 的 NO_OP（滑动窗口）
+	#      每推进一个 tick，为 tick + INPUT_DELAY_TICKS 预发一个 NO_OP
+	#      这样对端总是有未来几 tick 的命令缓存，不需要实时等待网络
+	if online_mode:
+		var future_tick: int = tick + Config.INPUT_DELAY_TICKS
+		if not scheduler.has_side_command_for_tick(future_tick, my_game_side):
+			var noop_cmd: Dictionary = Command.no_op_command(future_tick, my_game_side)
+			scheduler.enqueue_command(noop_cmd)
+			_send_local_command_net(noop_cmd)
+
 	# 4) CHECKSUM：每 DESYNC_CHECK_INTERVAL tick 生成校验和
 	if tick > 0 and tick % Config.DESYNC_CHECK_INTERVAL == 0 and tick != last_issued_checksum_tick:
 		var cs: int = simulator.state_checksum()
@@ -267,6 +274,8 @@ func _step_one_tick() -> bool:
 					String(info.get("side_a", "?")), int(info.get("cs_a", 0)),
 					String(info.get("side_b", "?")), int(info.get("cs_b", 0))
 				])
+				# desync 属于异常结束：没有合法胜者，设置 override_winner="" 让 UI 显示"平局"
+				painter.override_winner = ""
 				screen_mode = ScreenMode.RESULT
 		else:
 			# 本地模式：把 player 和 bot 的 checksum 都注入（两者在同一台机器上计算，必然一致；仅演示流程）
@@ -281,6 +290,8 @@ func _step_one_tick() -> bool:
 					String(info.get("side_a", "?")), int(info.get("cs_a", 0)),
 					String(info.get("side_b", "?")), int(info.get("cs_b", 0))
 				])
+				# desync 异常结束：显示平局（本地模式理论上不应出现，以防万一）
+				painter.override_winner = ""
 				screen_mode = ScreenMode.RESULT
 		last_issued_checksum_tick = tick
 
@@ -840,9 +851,13 @@ func _on_peer_command(cmd_dict: Dictionary) -> void:
 
 func _on_result_received(winner_side: String, _rc: String) -> void:
 	disconnect_countdown = -1.0
-	var i_won: bool = (winner_side == my_side)
 	simulator.running = false
-	painter.override_winner = my_game_side if i_won else peer_game_side
+	if winner_side == "draw":
+		# 真实平局：双方都显示"平局"
+		painter.override_winner = ""
+	else:
+		var i_won: bool = (winner_side == my_side)
+		painter.override_winner = my_game_side if i_won else peer_game_side
 	screen_mode = ScreenMode.RESULT
 	queue_redraw()
 
@@ -967,9 +982,23 @@ func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> v
 	scheduler.reset()
 	task_system.initialize(player_ids, bot_ids)
 	simulator.start_battle()
+	# 开局重置上一局可能污染的 UI 覆盖胜者显示（上局 RESULT 的 override_winner 会带进来）
+	painter.override_winner = ""
+	# 联机模式 bot_brain 不参与思考，但重置状态以防上一局残留影响
+	bot_brain.reset()
+	# 同步我的卡组到卡牌栏（host端=player端卡组，guest端=bot端卡组=my_deck）
 	selected_card_ids = my_deck.duplicate()
-	selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""
+	# 通知绘制层本机操控的阵营（影响法力条、任务进度、进化高亮等8处显示判断）
 	painter.controlled_side = my_game_side
+	# 联机模式：预发前 INPUT_DELAY_TICKS 个 tick 的 NO_OP（滑动窗口初始化）
+	# 双方都预发后，前几个 tick 的命令已齐，可以连续推进不需等待网络
+	if online_mode:
+		for i in range(1, Config.INPUT_DELAY_TICKS + 1):
+			var noop_cmd: Dictionary = Command.no_op_command(i, my_game_side)
+			scheduler.enqueue_command(noop_cmd)
+			_send_local_command_net(noop_cmd)
+	# 选第一张卡做默认选中；注意用 selected_card_ids（我的卡组），不要用 player_ids（guest端是对手卡组）
+	selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""
 	painter.info_card_id = selected_battle_card_id
 	last_issued_checksum_tick = -1
 	screen_mode = ScreenMode.BATTLE

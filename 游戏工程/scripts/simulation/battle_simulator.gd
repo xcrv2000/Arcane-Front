@@ -1326,8 +1326,10 @@ func _format_time(ticks: int) -> String:
 
 
 # —— P2：状态校验和辅助函数（FNV-1a 内联实现）——
+# 每步都截断到 32 位，确保跨客户端哈希结果严格一致（否则 64 位中间溢出会导致 desync）
 func _fnv_mix(h_in: int, value: int, prime: int) -> int:
-	return int((int(h_in) ^ int(value)) * int(prime))
+	var mixed: int = int((int(h_in) ^ int(value)) * int(prime))
+	return mixed & 0xFFFFFFFF
 
 
 # —— 单位字典按 id 升序比较（供 sort_custom 使用）——
@@ -1440,4 +1442,5 @@ func state_checksum() -> int:
 	h = _fnv_mix(h, int(stats.get("bot_spent_fp", 0)), FNV_PRIME)
 	h = _fnv_mix(h, int(stats.get("units_lost", 0)), FNV_PRIME)
 	h = _fnv_mix(h, int(stats.get("spell_casts", 0)), FNV_PRIME)
-	return h
+	# 最终再截一次，严格限定 32 位（FNV-1a 32bit 规范）
+	return h & 0xFFFFFFFF
