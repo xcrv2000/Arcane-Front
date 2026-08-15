@@ -156,7 +156,7 @@ func _init_networking() -> void:
 	if net != null:
 		return
 	net = NetworkClient.new()
-	net.default_host = "127.0.0.1"
+	net.default_host = "64.90.30.36"
 	net.default_port = 8765
 	net.connected_to_server.connect(_on_connected)
 	net.connection_failed.connect(_on_conn_fail)
@@ -169,6 +169,10 @@ func _init_networking() -> void:
 	net.opponent_win_by_disconnect.connect(_on_opponent_win_by_dc)
 	net.start_match_received.connect(_on_start_match)
 	net.command_received.connect(_on_peer_command)
+	# —— V0.5 弱网：批量命令到达 → 用 scheduler.enqueue_command_batch 去重入队（更高效）——
+	net.commands_batch_received.connect(_on_peer_commands_batch)
+	# —— V0.5 弱网：服务器对我方命令请求的应答 → 补全缺失命令 ——
+	net.commands_reply_received.connect(_on_commands_reply_received)
 	net.result_received.connect(_on_result_received)
 	net.peer_rematch_received.connect(_on_peer_rematch)
 	net.peer_left_received.connect(_on_peer_left)
@@ -277,15 +281,33 @@ func _step_one_tick() -> bool:
 
 	scheduler.current_tick = tick
 
-	# 3.5) 联机模式：预发未来 tick 的 NO_OP（滑动窗口）
-	#      每推进一个 tick，为 tick + INPUT_DELAY_TICKS 预发一个 NO_OP
-	#      这样对端总是有未来几 tick 的命令缓存，不需要实时等待网络
+	# V0.5 回滚：每 tick 执行后保存状态快照（用于迟到命令回滚重放）
 	if online_mode:
-		var future_tick: int = tick + Config.INPUT_DELAY_TICKS
-		if not scheduler.has_side_command_for_tick(future_tick, my_game_side):
-			var noop_cmd: Dictionary = Command.no_op_command(future_tick, my_game_side)
-			scheduler.enqueue_command(noop_cmd)
-			_send_local_command_net(noop_cmd)
+		scheduler.save_state_snapshot(tick, simulator.snapshot(), task_system.snapshot())
+
+	# 3.5) 联机模式：预发未来 tick 的 NO_OP（扩大滑动窗口抗抖动）
+	#      每推进一个 tick，为 [tick + current_input_delay, tick + input_delay+NO_OP_AHEAD_WINDOW]
+	#      范围内缺 NO_OP 的位置预发占位；真实 PLAY_CARD 会覆盖同 tick 同 side 的 NO_OP。
+	#      同时检测：缺命令超过阈值时，主动向服务器请求补全。
+	if online_mode:
+		var w_start: int = tick + scheduler.current_input_delay_ticks
+		var w_end: int = tick + scheduler.current_input_delay_ticks + Config.NO_OP_AHEAD_WINDOW
+		for ft in range(w_start, w_end + 1):
+			if not scheduler.has_side_command_for_tick(ft, my_game_side):
+				var noop_cmd: Dictionary = Command.no_op_command(ft, my_game_side)
+				scheduler.enqueue_command(noop_cmd)
+				_send_local_command_net(noop_cmd)
+		# —— V0.5 弱网：连续等待超过阈值 → 主动请求服务器补全对端缺失命令 ——
+		if scheduler.should_request_missing_commands():
+			var miss_start: int = scheduler.current_tick + 1
+			var miss_end: int = scheduler.current_tick + scheduler.current_input_delay_ticks + Config.MAX_WAIT_TICKS_BEFORE_REQUEST
+			# 请求对端阵营（peer_game_side）的命令补齐
+			if net != null:
+				net.send_request_commands(miss_start, miss_end, peer_game_side)
+				scheduler.mark_command_request_sent()
+				simulator.push_event("弱网：等待 %d tick 仍缺命令，已请求服务器补全 T%d~T%d。" % [
+					scheduler.consecutive_wait_ticks, miss_start, miss_end
+				])
 
 	# 4) CHECKSUM：每 DESYNC_CHECK_INTERVAL tick 生成校验和
 	if tick > 0 and tick % Config.DESYNC_CHECK_INTERVAL == 0 and tick != last_issued_checksum_tick:
@@ -805,7 +827,30 @@ func _draw_room_wait() -> void:
 # 网络状态小 HUD：显示当前 tick / 等待原因 / desync 信息
 func _draw_net_status_hud() -> void:
 	var lines: Array[String] = []
-	lines.append("T%d  tick %dHz  延迟%dt" % [scheduler.current_tick, Config.TICK_RATE, Config.INPUT_DELAY_TICKS])
+	# —— V0.5 弱网：显示自适应输入延迟 vs 静态配置 ——
+	var dly_txt: String = "延迟%dt/%dt" % [scheduler.current_input_delay_ticks, Config.INPUT_DELAY_TICKS]
+	lines.append("T%d  tick %dHz  %s" % [scheduler.current_tick, Config.TICK_RATE, dly_txt])
+	# —— V0.5 弱网：抖动统计（P95 / 平均 / 最坏）——
+	if scheduler.arrival_ahead_history.size() >= 5:
+		var p95: float = scheduler.jitter_p95_ahead_ticks
+		var avg: float = scheduler.jitter_avg_ahead_ticks
+		var worst: int = scheduler.jitter_worst_ahead_ticks
+		var qual: String = "优"
+		var qcol: Color = Color(0.42, 0.84, 0.52)  # 绿
+		if p95 < 0.0 or worst < -1:
+			qual = "差(丢帧)"
+			qcol = Color(0.96, 0.52, 0.50)  # 红
+		elif p95 < 2.0:
+			qual = "良"
+			qcol = Color(0.92, 0.72, 0.40)  # 黄
+		# 不直接用 col 变量（它在下面循环里重新赋值），这里仅构造文字
+		lines.append("抖动:%s P95%.1f μ%.1f w%d" % [qual, p95, avg, worst])
+	if scheduler.consecutive_wait_ticks > 3:
+		var wait_ms: float = float(scheduler.consecutive_wait_ticks) * Config.TICK_DT * 1000.0
+		lines.append("等待%dt(%.0fms)" % [scheduler.consecutive_wait_ticks, wait_ms])
+	if scheduler.last_request_tick > 0:
+		var ago: int = scheduler.current_tick - scheduler.last_request_tick
+		lines.append("补全请求:T-%d" % ago)
 	if scheduler.desynced:
 		var info: Dictionary = scheduler.desync_info
 		lines.append("DESYNC T%d: %s vs %s" % [int(info.get("tick", -1)), String(info.get("side_a", "?")), String(info.get("side_b", "?"))])
@@ -817,10 +862,19 @@ func _draw_net_status_hud() -> void:
 		return
 	var line_h: float = 13.0
 	var panel_h: float = lines.size() * line_h + 8.0
-	var panel: Rect2 = Rect2(size.x - 220.0, 70.0, 208.0, panel_h)
+	var panel: Rect2 = Rect2(size.x - 238.0, 70.0, 226.0, panel_h)
 	helpers.draw_panel(self, panel, Color(0.04, 0.05, 0.06, 0.80), 5.0, Color(0.90, 0.32, 0.30) if scheduler.desynced else Color(0.86, 0.66, 0.30), 1.0)
 	for index in range(lines.size()):
 		var col: Color = Color(0.96, 0.52, 0.50) if scheduler.desynced else Color(0.88, 0.84, 0.42) if scheduler.paused else Color(0.68, 0.74, 0.82)
+		if lines[index].begins_with("等待%dt") or lines[index].begins_with("补全请求"):
+			col = Color(0.96, 0.70, 0.40)
+		if lines[index].find("P95") != -1:
+			if lines[index].find("差") != -1:
+				col = Color(0.96, 0.52, 0.50)
+			elif lines[index].find("良") != -1:
+				col = Color(0.92, 0.72, 0.40)
+			elif lines[index].find("优") != -1:
+				col = Color(0.42, 0.84, 0.52)
 		helpers.draw_text_line(self, lines[index], Rect2(panel.position + Vector2(8.0, 4.0 + index * line_h), Vector2(panel.size.x - 16.0, line_h)), 10, col, HORIZONTAL_ALIGNMENT_LEFT)
 
 
@@ -919,9 +973,9 @@ func _on_start_match(seed: int, _side_role: String, my_deck: Array[String], peer
 	_start_online_battle(my_deck, peer_deck)
 
 
-func _on_peer_command(cmd_dict: Dictionary) -> void:
-	# 服务器转发的远端命令，直接入队 scheduler（不需要加 input delay，因为远端已经按 delay 打在对应的 tick_scheduled 上）
-	scheduler.enqueue_command_direct(cmd_dict)
+func _on_peer_command(_cmd_dict: Dictionary) -> void:
+	# V0.5 回滚：已由 commands_batch_received 统一处理（含去重+回滚检测），此回调不再重复入队
+	pass
 
 
 func _on_result_received(winner_side: String, _rc: String) -> void:
@@ -1110,7 +1164,7 @@ func _try_create_room() -> void:
 	online_status_text = "连接服务器中…"
 	queue_redraw()
 	if not await _wait_for_connection():
-		online_status_text = "连接服务器超时，请确认服务器已启动（默认 127.0.0.1:8765）"
+		online_status_text = "连接服务器超时，请确认服务器已启动（默认 %s:%d）" % [net.default_host, net.default_port]
 		queue_redraw()
 		return
 	net.send_create_room()
@@ -1127,7 +1181,7 @@ func _try_join_room(code_text: String) -> void:
 	online_status_text = "连接服务器中…"
 	queue_redraw()
 	if not await _wait_for_connection():
-		online_status_text = "连接服务器超时，请确认服务器已启动（默认 127.0.0.1:8765）"
+		online_status_text = "连接服务器超时，请确认服务器已启动（默认 %s:%d）" % [net.default_host, net.default_port]
 		queue_redraw()
 		return
 	net.send_join_room(code_text)
@@ -1230,13 +1284,20 @@ func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> v
 	selected_card_ids = my_deck.duplicate()
 	# 通知绘制层本机操控的阵营（影响法力条、任务进度、进化高亮等8处显示判断）
 	painter.controlled_side = my_game_side
-	# 联机模式：预发前 INPUT_DELAY_TICKS 个 tick 的 NO_OP（滑动窗口初始化）
-	# 双方都预发后，前几个 tick 的命令已齐，可以连续推进不需等待网络
+	# 联机模式：预发前 INPUT_DELAY_TICKS + NO_OP_AHEAD_WINDOW 个 tick 的 NO_OP（弱网滑动窗口初始化）
+	# 双方都预发后，前 N 个 tick 的命令已齐，可以连续推进不需等待网络；
+	# 即使高延迟或 TCP 重传，窗口内的 NO_OP 占位也能避免 strict_wait 立即暂停。
 	if online_mode:
-		for i in range(1, Config.INPUT_DELAY_TICKS + 1):
+		var init_window: int = scheduler.current_input_delay_ticks + Config.NO_OP_AHEAD_WINDOW
+		for i in range(1, init_window + 1):
 			var noop_cmd: Dictionary = Command.no_op_command(i, my_game_side)
 			scheduler.enqueue_command(noop_cmd)
 			_send_local_command_net(noop_cmd)
+		# V0.5：开局清空客户端命令发送历史（避免旧内容混入新局冗余）
+		if net != null:
+			net.reset_send_history()
+		# V0.5 回滚：保存初始状态快照（tick 0，用于回滚到第 1 tick）
+		scheduler.save_state_snapshot(0, simulator.snapshot(), task_system.snapshot())
 	# 选第一张卡做默认选中；注意用 selected_card_ids（我的卡组），不要用 player_ids（guest端是对手卡组）
 	selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""
 	painter.info_card_id = selected_battle_card_id
@@ -1247,12 +1308,87 @@ func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> v
 
 
 # —— 联机：玩家发出的本地命令同时发给服务器 ——
+# V0.5：改用 send_command_buffered，自动携带最近 COMMAND_REDUNDANCY_COUNT 条冗余历史
 func _send_local_command_net(cmd_dict: Dictionary) -> void:
 	if not online_mode:
 		return
 	if net == null:
 		return
-	net.send_command(cmd_dict)
+	net.send_command_buffered(cmd_dict)
+
+
+# —— V0.5 弱网：批量命令到达（内含冗余）→ 去重入队 scheduler + 回滚检测 ——
+func _on_peer_commands_batch(cmd_list: Array) -> void:
+	if scheduler == null:
+		return
+	scheduler.enqueue_command_batch(cmd_list)
+	# V0.5 回滚：如果检测到迟到真实命令，立即回滚重放
+	if scheduler.rollback_pending:
+		_perform_rollback()
+
+
+# —— V0.5 弱网：服务器对我方命令请求的应答 → 补全缺失命令 + 回滚检测 ——
+func _on_commands_reply_received(from_tick: int, to_tick: int, matched_commands: Array) -> void:
+	if scheduler == null:
+		return
+	if matched_commands.size() == 0:
+		simulator.push_event("弱网：请求 T%d~T%d 命令但服务器无命中，继续等待。" % [from_tick, to_tick])
+		return
+	var added: int = scheduler.enqueue_command_batch(matched_commands)
+	simulator.push_event("弱网：补全 T%d~T%d 命中 %d 条，新增 %d 条。" % [from_tick, to_tick, matched_commands.size(), added])
+	# V0.5 回滚：补全的命令中可能包含迟到的真实命令
+	if scheduler.rollback_pending:
+		_perform_rollback()
+
+
+# —— V0.5 回滚重放：收到迟到的真实命令后，回退状态并重放 ——
+func _perform_rollback() -> void:
+	var rb_tick: int = scheduler.rollback_tick
+	var rb_cmd: Dictionary = scheduler.rollback_cmd
+	scheduler.clear_rollback_state()
+
+	if rb_tick <= 0:
+		return
+
+	var snap: Variant = scheduler.get_state_snapshot(rb_tick - 1)
+	if snap == null:
+		simulator.push_event("弱网：迟到命令 T%d 无法回滚（无快照，已超出 2 秒窗口）" % rb_tick)
+		return
+
+	var replay_to: int = scheduler.current_tick
+	simulator.push_event("弱网：迟到命令 T%d，回滚重放 T%d→T%d" % [rb_tick, rb_tick, replay_to])
+
+	# 1. 恢复模拟器+任务系统状态到 rb_tick-1（即 rb_tick 执行前）
+	var snap_dict: Dictionary = snap
+	simulator.restore(snap_dict["sim"])
+	task_system.restore(snap_dict["task"])
+
+	# 2. 替换已消费命令记录（将 NO_OP 替换为迟到的真实 play_card）
+	scheduler.replace_consumed_command(rb_tick, rb_cmd)
+
+	# 3. 从 rb_tick 逐 tick 重放到 current_tick（使用修正后的命令）
+	scheduler.current_tick = rb_tick - 1
+	for t in range(rb_tick, replay_to + 1):
+		var cmds: Array = scheduler.get_consumed_commands(t)
+		for cmd in cmds:
+			simulator.execute_command(cmd, task_system)
+		simulator.advance_time(Config.TICK_DT)
+		task_system.check_mana(Config.PLAYER, simulator.player_mana())
+		task_system.check_mana(Config.BOT, simulator.bot_mana())
+		simulator.update_units(Config.TICK_DT)
+		simulator.update_spell_effects(Config.TICK_DT)
+		simulator.update_evolution_flashes(Config.TICK_DT)
+		scheduler.current_tick = t
+		# 保存修正后的新快照
+		scheduler.save_state_snapshot(t, simulator.snapshot(), task_system.snapshot())
+
+	# 4. 清除回滚期间的 desync 标志和过期 checksum（状态已修正）
+	scheduler.desynced = false
+	scheduler.desync_info = {}
+	for t in range(rb_tick, replay_to + 1):
+		scheduler.received_checksums.erase(t)
+
+	queue_redraw()
 
 
 # ———————————————— V0.4 联机：断线倒计时 tick ————————————————

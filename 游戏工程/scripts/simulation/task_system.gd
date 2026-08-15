@@ -373,3 +373,16 @@ func task_progress_ratio(side: String, card_id: String) -> float:
 	if bool(state.get("completed", false)):
 		return 1.0
 	return clamp(float(state.get("progress", 0.0)) / target, 0.0, 1.0)
+
+
+# —— V0.5 回滚重放：任务状态快照与恢复 ——
+# cards 是静态卡牌定义（不变），simulator 是外部引用（由控制器重新注入）
+# 只需快照 task_states（局内任务进度，会随对局变化）
+func snapshot() -> Dictionary:
+	return {
+		"task_states": task_states.duplicate(true),
+	}
+
+
+func restore(snap: Dictionary) -> void:
+	task_states = snap["task_states"].duplicate(true)

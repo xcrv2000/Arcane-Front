@@ -273,10 +273,116 @@ class RelayServer:
         room = self.rooms.get(c.room_code)
         if not room:
             return
-        # 记录命令到日志（供断线重连时回放恢复战场）
-        room.command_log.append(payload)
+        # —— V0.5 弱网：识别网络层包装类型 ——
+        net_type = str(payload.get("_net_type", ""))
+        # (1) REQUEST_COMMANDS：请求方希望补全 [from_tick, to_tick] 范围的命令
+        #      服务器直接用 command_log 命中后回发 COMMANDS_REPLY，不转发给对端（避免流量放大）
+        if net_type == "REQUEST_COMMANDS":
+            from_tick = int(payload.get("from_tick", 0))
+            to_tick = int(payload.get("to_tick", 0))
+            side_filter = str(payload.get("side", ""))
+            matched: List[dict] = []
+            if from_tick <= to_tick and from_tick >= 0:
+                for entry in room.command_log:
+                    # 跳过网络层包装（只匹配真实战斗命令，避免重复嵌套）
+                    entry_net = str(entry.get("_net_type", "")) if isinstance(entry, dict) else ""
+                    if entry_net:
+                        # 如果历史里记录的是 COMMAND_BATCH 包装，拆出里面的子命令再筛选
+                        if entry_net == "COMMAND_BATCH":
+                            for sub in entry.get("commands", []) or []:
+                                if self._cmd_in_range(sub, from_tick, to_tick, side_filter):
+                                    matched.append(sub)
+                        continue
+                    if self._cmd_in_range(entry, from_tick, to_tick, side_filter):
+                        matched.append(entry)
+            reply = {
+                "_net_type": "COMMANDS_REPLY",
+                "from_tick": from_tick,
+                "to_tick": to_tick,
+                "side": side_filter,
+                "commands": matched,
+            }
+            await c.send({"type": "COMMAND", "payload": reply})
+            return
+        # (2) COMMANDS_REPLY：客户端互相发送的应答（理论上服务器已自己答，此路径极少触发）
+        #     原样转发给对端即可
+        if net_type == "COMMANDS_REPLY":
+            for peer in room.peers(c):
+                await peer.send({"type": "COMMAND", "payload": payload})
+            return
+        # (3) COMMAND_BATCH（内含冗余历史）或单条战斗命令：
+        #     先把"真实战斗命令"去重记录到 command_log（供断线重连回放用）
+        #     再整个 payload 原样转发给对端（保留冗余结构，对端解包后自动去重）
+        if net_type == "COMMAND_BATCH":
+            # 把 batch 内部子命令逐条去重写入日志（供断线重连回放）
+            inner_cmds = payload.get("commands", []) or []
+            seen_keys = set()
+            for sub in inner_cmds:
+                if not isinstance(sub, dict):
+                    continue
+                sub_net = str(sub.get("_net_type", ""))
+                if sub_net:
+                    continue  # 忽略嵌套包装
+                k = self._cmd_log_key(sub)
+                if k in seen_keys:
+                    continue
+                seen_keys.add(k)
+                # 避免重复写入历史日志（同一 key 已存在则跳过）
+                if not self._command_log_has(room, k):
+                    room.command_log.append(sub)
+        else:
+            # 普通单条战斗命令：按原逻辑记录（除非已存在同 key）
+            k = self._cmd_log_key(payload)
+            if not self._command_log_has(room, k):
+                room.command_log.append(payload)
+        # 原样转发给对端（保留冗余结构，抗抖动冗余在接收端生效）
         for peer in room.peers(c):
             await peer.send({"type": "COMMAND", "payload": payload})
+
+    @staticmethod
+    def _cmd_in_range(cmd, from_tick: int, to_tick: int, side_filter: str) -> bool:
+        """判断一条战斗命令是否落在 [from_tick, to_tick] 且 side 匹配。"""
+        if not isinstance(cmd, dict):
+            return False
+        if "_net_type" in cmd:
+            return False
+        t = int(cmd.get("tick", -1))
+        if t < from_tick or t > to_tick:
+            return False
+        if side_filter:
+            s = str(cmd.get("side", ""))
+            # 服务器里 host=PLAYER / guest=BOT；但命令里用的是"player"/"bot"
+            # 这里 side_filter 来自客户端的阵营名，直接比对即可（客户端发的是 "player"/"bot"）
+            if s != side_filter:
+                return False
+        return True
+
+    @staticmethod
+    def _cmd_log_key(cmd) -> tuple:
+        """生成命令在 command_log 中的去重 key：(tick, side, type, 补充字段)。"""
+        if not isinstance(cmd, dict):
+            return ("_invalid",)
+        t = int(cmd.get("tick", 0))
+        s = str(cmd.get("side", ""))
+        typ = str(cmd.get("type", ""))
+        if typ == "play_card":
+            return (t, s, typ, str(cmd.get("card_id", "")))
+        if typ == "checksum":
+            return (t, s, typ, int(cmd.get("checksum", 0)))
+        # no_op 或其它：tick+side+type 即可唯一
+        return (t, s, typ)
+
+    @staticmethod
+    def _command_log_has(room, key: tuple) -> bool:
+        """检查 room.command_log 中是否已存在同 key 命令（去重，防止冗余写入）。"""
+        # 只检查最近 256 条（O(N) 足够；避免整表扫描）
+        start = max(0, len(room.command_log) - 512)
+        for i in range(start, len(room.command_log)):
+            entry = room.command_log[i]
+            if isinstance(entry, dict) and "_net_type" not in entry:
+                if RelayServer._cmd_log_key(entry) == key:
+                    return True
+        return False
 
     async def handle_rematch(self, c: Client, msg: dict) -> None:
         """Issue1: 玩家点击"再战"时通知对端"""

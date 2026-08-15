@@ -1444,3 +1444,48 @@ func state_checksum() -> int:
 	h = _fnv_mix(h, int(stats.get("spell_casts", 0)), FNV_PRIME)
 	# 最终再截一次，严格限定 32 位（FNV-1a 32bit 规范）
 	return h & 0xFFFFFFFF
+
+
+# —— V0.5 回滚重放：状态快照与恢复 ——
+# 深拷贝所有参与模拟的状态变量（不含 task_system，由控制器单独快照）
+func snapshot() -> Dictionary:
+	return {
+		"tick_count": tick_count,
+		"player_mana_fp": player_mana_fp,
+		"bot_mana_fp": bot_mana_fp,
+		"units": units.duplicate(true),
+		"spell_effects": spell_effects.duplicate(true),
+		"persistent_effects": persistent_effects.duplicate(true),
+		"bases": bases.duplicate(true),
+		"stats": stats.duplicate(true),
+		"event_log": event_log.duplicate(true),
+		"next_unit_id": next_unit_id,
+		"match_winner": match_winner,
+		"running": running,
+		"rng_seed": rng_seed,
+		"rng_state": rng.state,
+		"evolution_flashes": evolution_flashes.duplicate(true),
+		"card_cooldowns": card_cooldowns.duplicate(true),
+		"battle_time_f": battle_time_f,
+	}
+
+
+# 从快照恢复所有状态（用于回滚重放）
+func restore(snap: Dictionary) -> void:
+	tick_count = int(snap["tick_count"])
+	player_mana_fp = int(snap["player_mana_fp"])
+	bot_mana_fp = int(snap["bot_mana_fp"])
+	units = snap["units"].duplicate(true)
+	spell_effects = snap["spell_effects"].duplicate(true)
+	persistent_effects = snap["persistent_effects"].duplicate(true)
+	bases = snap["bases"].duplicate(true)
+	stats = snap["stats"].duplicate(true)
+	event_log = snap["event_log"].duplicate(true)
+	next_unit_id = int(snap["next_unit_id"])
+	match_winner = String(snap["match_winner"])
+	running = bool(snap["running"])
+	rng_seed = int(snap["rng_seed"])
+	rng.state = int(snap["rng_state"])
+	evolution_flashes = snap["evolution_flashes"].duplicate(true)
+	card_cooldowns = snap["card_cooldowns"].duplicate(true)
+	battle_time_f = float(snap["battle_time_f"])

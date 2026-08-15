@@ -65,3 +65,20 @@ const FP_SCALE_F: float = 1000.0
 
 # —— V0.4 断线策略（P4 引入）——
 const DISCONNECT_PAUSE_SECONDS: float = 30.0  # 断线暂停等待时长，超时判负
+
+# —— V0.5 弱网优化参数（新增）——
+# NO_OP 预发窗口：每 tick 预发到未来这么多 tick（60 tick = 1 秒缓冲）
+# 越大越抗抖，但断线恢复时的 NO_OP 占位越多（真实命令覆盖即可，不影响结果）
+const NO_OP_AHEAD_WINDOW: int = 60
+# 命令冗余发送：每次发送命令时附带最近 N 条历史命令（防止丢包/重传延迟）
+# 冗余越多越抗抖，但带宽开销变大；推荐 8~16
+const COMMAND_REDUNDANCY_COUNT: int = 12
+# 最大容忍暂停 tick 数：超过此数仍缺命令时，主动请求服务器补全
+const MAX_WAIT_TICKS_BEFORE_REQUEST: int = 30  # 500ms 仍缺命令就请求补全
+# 命令请求冷却：两次主动请求之间的最小间隔 tick，避免请求风暴
+const COMMAND_REQUEST_COOLDOWN_TICKS: int = 20  # ~333ms
+# 自适应输入延迟范围：根据网络抖动动态调整
+const INPUT_DELAY_MIN_TICKS: int = 4
+const INPUT_DELAY_MAX_TICKS: int = 12
+# 抖动统计窗口：统计最近多少个 tick 的命令到达延迟
+const JITTER_WINDOW_SIZE: int = 120  # 2 秒窗口
