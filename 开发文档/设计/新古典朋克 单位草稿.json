@@ -1,0 +1,264 @@
+{
+  "formatVersion": 1,
+  "workspace": {
+    "id": "workspace-demo",
+    "name": "Untitled Workspace"
+  },
+  "cards": [
+    {
+      "id": "card-94f2abdb-6a19-4b30-8e35-1865e995acb7",
+      "title": "沸腾 · 躁动",
+      "body": "红化\n2c\n范围内友军3秒加攻击加攻速"
+    },
+    {
+      "id": "card-0651737b-7fd9-45f9-8027-4259b84b9f10",
+      "title": "凝固 · 肃穆",
+      "body": "黑化\n2c\n生成一个1000血，持续3秒的护盾"
+    },
+    {
+      "id": "card-fc2fb0eb-c7ea-4a66-99de-a64300aff39d",
+      "title": "升华 · 超脱",
+      "body": "白化\n2c\n范围内友军3秒速度+10"
+    },
+    {
+      "id": "card-f20d24a9-9efe-43ae-9b57-f50dff71da33",
+      "title": "析出 · 闪耀",
+      "body": "黄化\n2c\n范围内友军获得3秒金身"
+    },
+    {
+      "id": "card-641a14dd-cfed-46f3-8e73-7f32c16246ca",
+      "title": "新古典朋克",
+      "body": "主题炼金术+乐队\n主要机制是法术+变身\n特殊晋升机制"
+    },
+    {
+      "id": "card-98882917-ebfd-431e-a502-584b12abec89",
+      "title": "铜管小子",
+      "body": "3c\n中属性白板。被四个本家法术打了之后铜管小子会转变成新形态（血量不变）"
+    },
+    {
+      "id": "card-bde0a94d-6c8f-4960-848d-bac44d38c968",
+      "title": "弦乐四重奏",
+      "body": "10c\n每使用一个法术，费用+1\n高属性四白板。被四个本家法术打了之后，其中一个未转变的会转变成新形态（血量不变）"
+    },
+    {
+      "id": "card-b438cc82-c5bc-4eb3-a018-484ef73714c8",
+      "title": "小号小子",
+      "body": "衍生自【铜管小子+升华超脱】\n飞行（与地面单位无碰撞，不会被地面单位仇恨追踪，不受地面单位的近战伤害）"
+    },
+    {
+      "id": "card-9e9f313d-fe51-414e-84e3-10d8c642c9d0",
+      "title": "大号小子",
+      "body": "衍生自【铜管小子+凝固肃穆】\n远程aoe+击退"
+    },
+    {
+      "id": "card-e0f5edc5-a9b1-4578-b29b-31201f029556",
+      "title": "长号小子",
+      "body": "衍生自【铜管小子+沸腾躁动】\n高攻速"
+    },
+    {
+      "id": "card-ae701a14-dd6e-44f7-b484-899edeafd453",
+      "title": "圆号小子",
+      "body": "衍生自【铜管小子+析出闪耀】\n高防御"
+    },
+    {
+      "id": "card-c13f08ab-060e-4055-8ba0-9d0a24838221",
+      "title": "大提琴手",
+      "body": "衍生自【弦乐四重奏+析出闪耀】\n保持金身+为周围友方单位持续提供10%减伤。buff不叠加"
+    },
+    {
+      "id": "card-c691a1af-9d01-4497-8a0e-75d8ed150449",
+      "title": "中提琴手",
+      "body": "衍生自【弦乐四重奏+沸腾躁动】\n为周围友方单位持续提供高攻速+高攻击。buff不叠加"
+    },
+    {
+      "id": "card-ec4f65c4-5b23-46c7-b58f-bbfe37339001",
+      "title": "低音提琴手",
+      "body": "衍生自【弦乐四重奏+凝固肃穆】\n保持展开护盾。"
+    },
+    {
+      "id": "card-eea7fbde-035f-4306-b93b-ff5d075af68d",
+      "title": "小提琴手",
+      "body": "衍生自【弦乐四重奏+升华超脱】\n保持为周围友方单位提供高速。buff不叠加"
+    },
+    {
+      "id": "card-5e0dd462-1b89-42cd-b0a6-e3f2477142cd",
+      "title": "重炮打击乐手",
+      "body": "4c\n慢速远程\n该单位在场时，你每打出一张法术，该单位向最近的敌人（最近的单位或建筑）打出一发炮弹。炮弹有溅射伤害"
+    },
+    {
+      "id": "card-8f4cca49-68d3-41c6-be45-9d7bd76173e3",
+      "title": "木管游荡者",
+      "body": "3c 依照周围的其它友方单位数量，实时变为以下单位：\n0个：笛子游荡者\n1-3个：单簧游荡者\n4或更多：双簧游荡者"
+    },
+    {
+      "id": "card-8c1b5910-60bb-4fc9-b2d5-f3c033aeabf8",
+      "title": "笛子游荡者",
+      "body": "\n无仇恨，随机游走，速度慢\n自然回费速度增加20%"
+    },
+    {
+      "id": "card-ee3d39da-90cd-4340-9a5f-464ea0bfdce3",
+      "title": "单簧游荡者",
+      "body": "\n默认仇恨，速度慢\n范围内友方单位获得加速、加攻。离开范围后持续三秒。"
+    },
+    {
+      "id": "card-cf76f11c-8597-4836-8879-e3f6b51d0152",
+      "title": "双簧游荡者",
+      "body": "\n默认仇恨，速度慢\n范围内所有单位（包括自己）的速度变为范围内所有单位速度的平均\n范围内友方单位获得射程+20%。"
+    }
+  ],
+  "relations": [],
+  "views": [
+    {
+      "id": "view-default",
+      "name": "Default View",
+      "camera": {
+        "x": 236,
+        "y": 319,
+        "zoom": 0.639
+      },
+      "cardInstances": [
+        {
+          "cardId": "card-94f2abdb-6a19-4b30-8e35-1865e995acb7",
+          "x": 184,
+          "y": 332,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-0651737b-7fd9-45f9-8027-4259b84b9f10",
+          "x": 174,
+          "y": 148,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-fc2fb0eb-c7ea-4a66-99de-a64300aff39d",
+          "x": 167,
+          "y": -58,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-f20d24a9-9efe-43ae-9b57-f50dff71da33",
+          "x": 191,
+          "y": 517,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-641a14dd-cfed-46f3-8e73-7f32c16246ca",
+          "x": -86,
+          "y": -407,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-98882917-ebfd-431e-a502-584b12abec89",
+          "x": 469,
+          "y": -298,
+          "width": 329,
+          "height": 158
+        },
+        {
+          "cardId": "card-bde0a94d-6c8f-4960-848d-bac44d38c968",
+          "x": 900,
+          "y": -299,
+          "width": 358,
+          "height": 184
+        },
+        {
+          "cardId": "card-b438cc82-c5bc-4eb3-a018-484ef73714c8",
+          "x": 540,
+          "y": -69,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-9e9f313d-fe51-414e-84e3-10d8c642c9d0",
+          "x": 534,
+          "y": 134,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-e0f5edc5-a9b1-4578-b29b-31201f029556",
+          "x": 521,
+          "y": 342,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-ae701a14-dd6e-44f7-b484-899edeafd453",
+          "x": 528,
+          "y": 528,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-c13f08ab-060e-4055-8ba0-9d0a24838221",
+          "x": 924,
+          "y": 530,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-c691a1af-9d01-4497-8a0e-75d8ed150449",
+          "x": 922,
+          "y": 337,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-ec4f65c4-5b23-46c7-b58f-bbfe37339001",
+          "x": 927,
+          "y": 138,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-eea7fbde-035f-4306-b93b-ff5d075af68d",
+          "x": 929,
+          "y": -69,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-5e0dd462-1b89-42cd-b0a6-e3f2477142cd",
+          "x": 1675,
+          "y": -335,
+          "width": 364,
+          "height": 200
+        },
+        {
+          "cardId": "card-8f4cca49-68d3-41c6-be45-9d7bd76173e3",
+          "x": 1301,
+          "y": -337,
+          "width": 338,
+          "height": 216
+        },
+        {
+          "cardId": "card-8c1b5910-60bb-4fc9-b2d5-f3c033aeabf8",
+          "x": 1311,
+          "y": -99,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-ee3d39da-90cd-4340-9a5f-464ea0bfdce3",
+          "x": 1311,
+          "y": 122,
+          "width": 280,
+          "height": 180
+        },
+        {
+          "cardId": "card-cf76f11c-8597-4836-8879-e3f6b51d0152",
+          "x": 1277,
+          "y": 346,
+          "width": 429,
+          "height": 174
+        }
+      ]
+    }
+  ],
+  "activeViewId": "view-default"
+}

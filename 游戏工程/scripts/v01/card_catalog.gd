@@ -2,11 +2,21 @@ extends RefCounted
 
 const CARD_DATA_PATH: String = "res://data/cards.json"
 
+# 主卡目录包含当前禁用卡，供图鉴、任务定义与运行时查找使用。
 static func all_cards() -> Array[Dictionary]:
 	var cards: Array[Dictionary] = _load_card_group("cards")
 	if cards.is_empty():
 		push_error("CardCatalog did not load any cards from %s." % CARD_DATA_PATH)
 	return cards
+
+
+# 可编辑牌组、牌组存档与 Bot 只能使用显式允许携带的主卡。
+static func deckable_cards() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for card in all_cards():
+		if bool(card.get("deckable", true)):
+			result.append(card)
+	return result
 
 
 # 衍生单位可在图鉴与对局中使用，但不进入可编辑牌组的卡池。
@@ -17,6 +27,19 @@ static func derivative_units() -> Array[Dictionary]:
 static func all_runtime_cards() -> Array[Dictionary]:
 	var result: Array[Dictionary] = all_cards()
 	result.append_array(derivative_units())
+	return result
+
+
+static func has_tag(card: Dictionary, tag: String) -> bool:
+	return card.get("tags", []).has(tag)
+
+
+static func cards_with_tag(tag: String, include_derivatives: bool = true) -> Array[Dictionary]:
+	var source: Array[Dictionary] = all_runtime_cards() if include_derivatives else all_cards()
+	var result: Array[Dictionary] = []
+	for card in source:
+		if has_tag(card, tag):
+			result.append(card)
 	return result
 
 
@@ -56,6 +79,12 @@ static func _load_card_group(group_name: String) -> Array[Dictionary]:
 
 static func _normalize_card(card: Dictionary) -> void:
 	card["color"] = _color_from_value(card.get("color", "#ffffff"))
+	var normalized_tags: Array[String] = []
+	for raw_tag in card.get("tags", []):
+		var tag: String = String(raw_tag).strip_edges()
+		if tag != "" and not normalized_tags.has(tag):
+			normalized_tags.append(tag)
+	card["tags"] = normalized_tags
 
 	var evolution: Dictionary = card.get("evolution", {})
 	if evolution.is_empty():

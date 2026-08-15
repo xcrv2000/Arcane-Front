@@ -32,7 +32,7 @@ func reset() -> void:
 # 从全卡池中随机选 6 张不同的卡。
 func _select_random_deck() -> void:
 	var all_ids: Array[String] = []
-	for card in CardCatalog.all_cards():
+	for card in CardCatalog.deckable_cards():
 		if bool(card.get("ai_deckable", true)):
 			all_ids.append(String(card["id"]))
 	bot_deck_ids.clear()
@@ -46,7 +46,7 @@ func _select_random_deck() -> void:
 
 func _filter_ai_deck_ids(source_ids: Array) -> Array[String]:
 	var eligible_by_id: Dictionary = {}
-	for card in CardCatalog.all_cards():
+	for card in CardCatalog.deckable_cards():
 		eligible_by_id[String(card["id"])] = bool(card.get("ai_deckable", true))
 	var filtered: Array[String] = []
 	for raw_card_id in source_ids:

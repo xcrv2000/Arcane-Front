@@ -846,6 +846,9 @@ func _perform_attack(unit: Dictionary, target: Dictionary) -> void:
 	var damage_int: int = int(unit["damage"])
 	var source_card_id: String = String(unit["card_id"])
 	var source_unit_id: int = int(unit["id"])
+	var target_pos_fp: Dictionary = target.get("pos_fp", unit["pos_fp"])
+	var impact_radius_fp: int = 0 if String(target.get("kind", "")) == "base" else int(unit.get("aoe_radius_fp", 0))
+	_append_attack_effect(unit, target_pos_fp, impact_radius_fp)
 	if String(target.get("kind", "")) == "base":
 		_damage_base(target["side"], damage_int, unit["side"], source_card_id)
 		var excluded: Array[int] = []
@@ -860,6 +863,21 @@ func _perform_attack(unit: Dictionary, target: Dictionary) -> void:
 		_damage_unit(target["unit"], damage_int, unit["side"], source_card_id, source_unit_id)
 
 	_damage_extra_attack_targets(unit, hit_ids, max(0, int(unit.get("multi_target_count", 1)) - 1), damage_int)
+
+
+# 普攻表现只写入非同步特效队列，不改变命中时刻或战斗数值。
+func _append_attack_effect(unit: Dictionary, target_pos_fp: Dictionary, impact_radius_fp: int = 0) -> void:
+	spell_effects.append({
+		"mode": "attack",
+		"from_fp": unit["pos_fp"].duplicate(),
+		"pos_fp": target_pos_fp.duplicate(),
+		"radius_fp": impact_radius_fp,
+		"time": 0.20,
+		"max_time": 0.20,
+		"side": unit["side"],
+		"color": unit["color"],
+		"label": ""
+	})
 
 
 # AOE 落点
@@ -905,6 +923,7 @@ func _damage_extra_attack_targets(unit: Dictionary, excluded_unit_ids: Array[int
 		if best.size() == 0:
 			return
 		excluded_unit_ids.append(int(best["id"]))
+		_append_attack_effect(unit, best["pos_fp"])
 		_damage_unit(best, damage_int, unit["side"], String(unit["card_id"]), int(unit["id"]))
 		remaining -= 1
 

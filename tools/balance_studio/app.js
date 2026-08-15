@@ -25,6 +25,7 @@
         { path: "short_name", label: "短名", type: "text" },
         { path: "role", label: "定位", type: "text" },
         { path: "kind", label: "类型", type: "select", options: ["unit", "spell"] },
+        { path: "tags", label: "标签（逗号分隔）", type: "tag-list", wide: true, note: "可同时填写系列与机制标签；支持中文或英文逗号。" },
         { path: "cost", label: "费用", type: "number", step: 1 },
         { path: "color", label: "颜色", type: "color" },
         { path: "trial_note", label: "用途说明", type: "textarea", wide: true }
@@ -553,10 +554,10 @@
     }
 
     const inputType = field.type === "color" ? "color" : field.type === "number" ? "number" : "text";
-    const dataType = field.type === "number" ? "number" : "text";
+    const dataType = field.type === "number" ? "number" : field.type === "tag-list" ? "tag-list" : "text";
     const optional = field.optional ? "true" : "false";
     const step = field.step ? ` step="${escapeAttr(String(field.step))}"` : "";
-    const inputValue = field.type === "color" ? safeColor(value) : value === undefined ? "" : value;
+    const inputValue = field.type === "color" ? safeColor(value) : field.type === "tag-list" ? (Array.isArray(value) ? value.join(", ") : "") : value === undefined ? "" : value;
     return `
       <div class="field"${wide}>
         <label>${escapeHtml(field.label)}</label>
@@ -587,6 +588,8 @@
     let value;
     if (type === "checkbox") {
       value = input.checked;
+    } else if (type === "tag-list") {
+      value = [...new Set(input.value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean))];
     } else if (type === "number") {
       if (input.value.trim() === "" && optional) {
         deleteByPath(card, path);
