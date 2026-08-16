@@ -73,19 +73,33 @@ func update_layout(new_view_size: Vector2, is_frontend: bool) -> void:
 	board_rect = Rect2(available.position + Vector2((available.size.x - map_width) * 0.5, 0.0), Vector2(map_width, map_height))
 
 
+# 客机控制 BOT 阵营时，把逻辑 Y 上下翻转，使本机控制的阵营始终显示在地图下方。
+func _is_side_mirrored() -> bool:
+	return controlled_side == Config.BOT
+
+
 # 逻辑坐标 → 屏幕坐标。
 func map_to_screen(logic_position: Vector2) -> Vector2:
+	var display_y: float = logic_position.y
+	if _is_side_mirrored():
+		display_y = Config.MAP_HEIGHT - display_y
 	return board_rect.position + Vector2(
 		logic_position.x / Config.MAP_WIDTH * board_rect.size.x,
-		logic_position.y / Config.MAP_HEIGHT * board_rect.size.y
+		display_y / Config.MAP_HEIGHT * board_rect.size.y
 	)
 
 
 # 屏幕坐标 → 逻辑坐标（限制在地图范围内）。
 func screen_to_map(screen_position: Vector2) -> Vector2:
+	var logic_y: float = clamp(
+		(screen_position.y - board_rect.position.y) / board_rect.size.y * Config.MAP_HEIGHT,
+		0.0, Config.MAP_HEIGHT
+	)
+	if _is_side_mirrored():
+		logic_y = Config.MAP_HEIGHT - logic_y
 	return Vector2(
 		clamp((screen_position.x - board_rect.position.x) / board_rect.size.x * Config.MAP_WIDTH, 0.0, Config.MAP_WIDTH),
-		clamp((screen_position.y - board_rect.position.y) / board_rect.size.y * Config.MAP_HEIGHT, 0.0, Config.MAP_HEIGHT)
+		logic_y
 	)
 
 
@@ -373,21 +387,26 @@ func _draw_battle_header(canvas: CanvasItem) -> void:
 	var margin: float = 14.0
 	var header: Rect2 = Rect2(margin, 12.0, view_size.x - margin * 2.0, 48.0)
 	helpers.draw_panel(canvas, header, Color(0.10, 0.12, 0.15), 7.0, Color(0.20, 0.23, 0.28), 1.0)
-	var player_base: Dictionary = simulator.bases[Config.PLAYER]
-	var bot_base: Dictionary = simulator.bases[Config.BOT]
-	var left: String = "我方基地 %d/300  费 %.1f/10" % [int(ceil(float(player_base["hp"]))), simulator.player_mana()]
-	var right: String = "Bot基地 %d/300  费 %.1f/10" % [int(ceil(float(bot_base["hp"]))), simulator.bot_mana()]
+	var my_side: String = controlled_side
+	var enemy_side: String = MapMath.opponent(controlled_side)
+	var my_base: Dictionary = simulator.bases[my_side]
+	var enemy_base: Dictionary = simulator.bases[enemy_side]
+	var my_mana: float = simulator.player_mana() if my_side == Config.PLAYER else simulator.bot_mana()
+	var enemy_mana: float = simulator.player_mana() if enemy_side == Config.PLAYER else simulator.bot_mana()
+	var left: String = "我方基地 %d/300  费 %.1f/10" % [int(ceil(float(my_base["hp"]))), my_mana]
+	var right: String = "对方基地 %d/300  费 %.1f/10" % [int(ceil(float(enemy_base["hp"]))), enemy_mana]
 	helpers.draw_text_line(canvas, left, Rect2(header.position + Vector2(12.0, 6.0), Vector2(header.size.x - 24.0, 18.0)), 15, Color(0.72, 0.88, 1.0), HORIZONTAL_ALIGNMENT_LEFT)
 	helpers.draw_text_line(canvas, right, Rect2(header.position + Vector2(12.0, 25.0), Vector2(header.size.x - 24.0, 18.0)), 15, Color(1.0, 0.72, 0.70), HORIZONTAL_ALIGNMENT_LEFT)
-	helpers.draw_text_line(canvas, "清屏 %d:%d" % [int(player_base["clear_count"]), int(bot_base["clear_count"])], Rect2(header.position + Vector2(0.0, 15.0), header.size), 15, Color(0.78, 0.82, 0.88), HORIZONTAL_ALIGNMENT_RIGHT)
+	helpers.draw_text_line(canvas, "清屏 %d:%d" % [int(my_base["clear_count"]), int(enemy_base["clear_count"])], Rect2(header.position + Vector2(0.0, 15.0), header.size), 15, Color(0.78, 0.82, 0.88), HORIZONTAL_ALIGNMENT_RIGHT)
 
 
 func _draw_map(canvas: CanvasItem) -> void:
 	helpers.draw_panel(canvas, board_rect, Color(0.08, 0.09, 0.10), 8.0, Color(0.24, 0.27, 0.32), 1.0)
-	var bot_half: Rect2 = Rect2(board_rect.position, Vector2(board_rect.size.x, board_rect.size.y * 0.5))
-	var player_half: Rect2 = Rect2(board_rect.position + Vector2(0.0, board_rect.size.y * 0.5), Vector2(board_rect.size.x, board_rect.size.y * 0.5))
-	canvas.draw_rect(bot_half.grow(-2.0), Color(0.24, 0.10, 0.10))
-	canvas.draw_rect(player_half.grow(-2.0), Color(0.08, 0.16, 0.25))
+	# 始终让本机控制的阵营在下半区（蓝方），对手在上半区（红方）。
+	var enemy_half: Rect2 = Rect2(board_rect.position, Vector2(board_rect.size.x, board_rect.size.y * 0.5))
+	var own_half: Rect2 = Rect2(board_rect.position + Vector2(0.0, board_rect.size.y * 0.5), Vector2(board_rect.size.x, board_rect.size.y * 0.5))
+	canvas.draw_rect(enemy_half.grow(-2.0), Color(0.24, 0.10, 0.10))
+	canvas.draw_rect(own_half.grow(-2.0), Color(0.08, 0.16, 0.25))
 
 	var river_top: float = map_to_screen(Vector2(0.0, Config.RIVER_Y - 2.1)).y
 	var river_bottom: float = map_to_screen(Vector2(0.0, Config.RIVER_Y + 2.1)).y
@@ -401,7 +420,8 @@ func _draw_map(canvas: CanvasItem) -> void:
 		canvas.draw_rect(bridge_rect, Color(0.48, 0.38, 0.28))
 		canvas.draw_rect(bridge_rect, Color(0.78, 0.66, 0.46), false, max(1.0, logic_to_pixels(0.25)))
 
-	var deploy_line: float = map_to_screen(Vector2(0.0, Config.PLAYER_DEPLOY_MIN_Y)).y
+	var own_deploy_y: float = Config.PLAYER_DEPLOY_MIN_Y if controlled_side == Config.PLAYER else Config.BOT_DEPLOY_MAX_Y
+	var deploy_line: float = map_to_screen(Vector2(0.0, own_deploy_y)).y
 	canvas.draw_line(Vector2(board_rect.position.x + 6.0, deploy_line), Vector2(board_rect.end.x - 6.0, deploy_line), Color(0.47, 0.73, 0.96, 0.55), 1.0)
 	helpers.draw_text_line(canvas, "我方单位部署区", Rect2(board_rect.position.x + 8.0, deploy_line + 4.0, board_rect.size.x - 16.0, 18.0), 12, Color(0.60, 0.80, 0.98, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
 
@@ -427,7 +447,7 @@ func _draw_base(canvas: CanvasItem, side: String) -> void:
 	var base: Dictionary = simulator.bases[side]
 	var center: Vector2 = map_to_screen(MapMath.base_position(side))
 	var radius: float = logic_to_pixels(Config.BASE_RADIUS)
-	var fill: Color = Color(0.58, 0.14, 0.13) if side == Config.BOT else Color(0.10, 0.34, 0.58)
+	var fill: Color = Color(0.58, 0.14, 0.13) if side != controlled_side else Color(0.10, 0.34, 0.58)
 	canvas.draw_circle(center, radius, fill)
 	canvas.draw_circle(center, radius, Color(0.90, 0.92, 0.95), false, 2.0)
 	helpers.draw_text_line(canvas, "基", Rect2(center - Vector2(radius, radius * 0.65), Vector2(radius * 2.0, radius * 1.3)), 19, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER)
@@ -563,12 +583,13 @@ func _draw_unit(canvas: CanvasItem, unit: Dictionary) -> void:
 	var center: Vector2 = map_to_screen(pos_logic)
 	var radius: float = logic_to_pixels(radius_logic)
 	var side: String = String(unit["side"])
+	var is_own: bool = side == controlled_side
 	var fill: Color = unit["color"]
-	if side == Config.BOT:
+	if not is_own:
 		fill = fill.darkened(0.25)
 	var stroke: Color = Color(0.06, 0.07, 0.08)
-	helpers.draw_unit_team_ring(canvas, center, radius, side)
-	var texture: Texture2D = helpers.unit_art_texture(String(unit.get("art_id", unit.get("card_id", ""))), helpers.unit_art_view_for_side(side))
+	helpers.draw_unit_team_ring(canvas, center, radius, side, controlled_side)
+	var texture: Texture2D = helpers.unit_art_texture(String(unit.get("art_id", unit.get("card_id", ""))), helpers.unit_art_view_for_side(side, controlled_side))
 	if texture != null:
 		helpers.draw_unit_art(canvas, texture, center, radius)
 	else:
@@ -577,7 +598,7 @@ func _draw_unit(canvas: CanvasItem, unit: Dictionary) -> void:
 	var hp_ratio: float = clamp(float(unit["hp"]) / float(unit["max_hp"]), 0.0, 1.0)
 	var bar_rect: Rect2 = Rect2(center + Vector2(-radius, radius + 6.0), Vector2(radius * 2.0, 4.0))
 	canvas.draw_rect(bar_rect, Color(0.04, 0.04, 0.05))
-	canvas.draw_rect(Rect2(bar_rect.position, Vector2(bar_rect.size.x * hp_ratio, bar_rect.size.y)), Color(0.28, 0.86, 0.42) if side == Config.PLAYER else Color(0.95, 0.36, 0.32))
+	canvas.draw_rect(Rect2(bar_rect.position, Vector2(bar_rect.size.x * hp_ratio, bar_rect.size.y)), Color(0.28, 0.86, 0.42) if is_own else Color(0.95, 0.36, 0.32))
 
 
 func _draw_battle_card_bar(canvas: CanvasItem) -> void:
@@ -661,8 +682,17 @@ func _draw_event_log(canvas: CanvasItem) -> void:
 	helpers.draw_panel(canvas, log_rect, Color(0.06, 0.07, 0.09, 0.72), 7.0, Color(0.20, 0.23, 0.27), 1.0)
 	var line_y: float = log_rect.position.y + 4.0
 	for index in range(simulator.event_log.size()):
-		helpers.draw_text_line(canvas, simulator.event_log[index], Rect2(log_rect.position.x + 8.0, line_y, log_rect.size.x - 16.0, 16.0), 11, Color(0.72, 0.77, 0.84), HORIZONTAL_ALIGNMENT_LEFT)
+		var text: String = _localize_event_text(simulator.event_log[index])
+		helpers.draw_text_line(canvas, text, Rect2(log_rect.position.x + 8.0, line_y, log_rect.size.x - 16.0, 16.0), 11, Color(0.72, 0.77, 0.84), HORIZONTAL_ALIGNMENT_LEFT)
 		line_y += 16.0
+
+
+# 事件日志由模拟层以固定阵营语义生成；客机控制 BOT 时在显示层转成本机视角。
+func _localize_event_text(text: String) -> String:
+	if controlled_side == Config.BOT:
+		text = text.replace("我方", "对方")
+		text = text.replace("Bot", "我方")
+	return text
 
 
 # 选中卡牌详情面板：显示任务条件与进化效果。
@@ -734,14 +764,22 @@ func draw_result_overlay(canvas: CanvasItem) -> void:
 	var panel: Rect2 = Rect2(Vector2((view_size.x - panel_width) * 0.5, (view_size.y - panel_height) * 0.5), Vector2(panel_width, panel_height))
 	helpers.draw_panel(canvas, panel, Color(0.11, 0.13, 0.16), 8.0, Color(0.38, 0.46, 0.55), 2.0)
 	var winner: String = override_winner if override_winner != "" else simulator.match_winner
-	helpers.draw_text_line(canvas, "%s胜利" % MapMath.side_name(winner), Rect2(panel.position + Vector2(18.0, 16.0), Vector2(panel.size.x - 36.0, 28.0)), 25, Color(0.94, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "%s胜利" % MapMath.side_name(winner, controlled_side), Rect2(panel.position + Vector2(18.0, 16.0), Vector2(panel.size.x - 36.0, 28.0)), 25, Color(0.94, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_text_line(canvas, "用时 %s；单位阵亡 %d；法术施放 %d" % [_format_time(simulator.battle_time()), int(simulator.stats["units_lost"]), int(simulator.stats["spell_casts"])], Rect2(panel.position + Vector2(18.0, 48.0), Vector2(panel.size.x - 36.0, 20.0)), 14, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "清屏次数 我方 %d / Bot %d" % [int(simulator.bases[Config.PLAYER]["clear_count"]), int(simulator.bases[Config.BOT]["clear_count"])], Rect2(panel.position + Vector2(18.0, 72.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	var my_side: String = controlled_side
+	var enemy_side: String = MapMath.opponent(controlled_side)
+	var my_clear: int = int(simulator.bases[my_side]["clear_count"])
+	var enemy_clear: int = int(simulator.bases[enemy_side]["clear_count"])
+	helpers.draw_text_line(canvas, "清屏次数 我方 %d / 对方 %d" % [my_clear, enemy_clear], Rect2(panel.position + Vector2(18.0, 72.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 	var spent_fp_f: float = preload("res://scripts/config/game_config.gd").FP_SCALE_F
-	var p_spent: float = float(int(simulator.stats.get("player_spent_fp", simulator.stats.get("player_spent", 0)))) / spent_fp_f
-	var b_spent: float = float(int(simulator.stats.get("bot_spent_fp", simulator.stats.get("bot_spent", 0)))) / spent_fp_f
-	helpers.draw_text_line(canvas, "耗费 我方 %.0f / Bot %.0f" % [p_spent, b_spent], Rect2(panel.position + Vector2(18.0, 94.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "任务 我方 %d / Bot %d；进化 我方 %d / Bot %d" % [int(simulator.stats.get("player_tasks_completed", 0)), int(simulator.stats.get("bot_tasks_completed", 0)), int(simulator.stats.get("player_evolutions", 0)), int(simulator.stats.get("bot_evolutions", 0))], Rect2(panel.position + Vector2(18.0, 116.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	var my_spent: float = float(int(simulator.stats.get(my_side + "_spent_fp", simulator.stats.get(my_side + "_spent", 0)))) / spent_fp_f
+	var enemy_spent: float = float(int(simulator.stats.get(enemy_side + "_spent_fp", simulator.stats.get(enemy_side + "_spent", 0)))) / spent_fp_f
+	helpers.draw_text_line(canvas, "耗费 我方 %.0f / 对方 %.0f" % [my_spent, enemy_spent], Rect2(panel.position + Vector2(18.0, 94.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	var my_tasks: int = int(simulator.stats.get(my_side + "_tasks_completed", 0))
+	var enemy_tasks: int = int(simulator.stats.get(enemy_side + "_tasks_completed", 0))
+	var my_evos: int = int(simulator.stats.get(my_side + "_evolutions", 0))
+	var enemy_evos: int = int(simulator.stats.get(enemy_side + "_evolutions", 0))
+	helpers.draw_text_line(canvas, "任务 我方 %d / 对方 %d；进化 我方 %d / 对方 %d" % [my_tasks, enemy_tasks, my_evos, enemy_evos], Rect2(panel.position + Vector2(18.0, 116.0), Vector2(panel.size.x - 36.0, 18.0)), 13, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 
 	# 卡牌详情列表
 	var list_top: float = panel.position.y + 142.0

@@ -43,8 +43,9 @@ func draw_two_line_text(canvas: CanvasItem, text: String, rect: Rect2, font_size
 
 
 # 我方显示背面，敌方显示正面。
-func unit_art_view_for_side(side: String) -> String:
-	return Config.UNIT_ART_BACK if side == Config.PLAYER else Config.UNIT_ART_FRONT
+# own_side 用于联机客机控制 BOT 阵营时反转视角：本机控制的阵营显示背面，对手显示正面。
+func unit_art_view_for_side(side: String, own_side: String = Config.PLAYER) -> String:
+	return Config.UNIT_ART_BACK if side == own_side else Config.UNIT_ART_FRONT
 
 
 # 卡牌的表现层 art_id：进化卡用 evolved_id，否则用 id。
@@ -100,8 +101,9 @@ func draw_texture_centered_height(canvas: CanvasItem, texture: Texture2D, center
 
 
 # 绘制单位阵营识别环（蓝/红），不烘焙进美术图片。
-func draw_unit_team_ring(canvas: CanvasItem, center: Vector2, radius: float, side: String) -> void:
-	var color: Color = Color(0.32, 0.68, 1.0) if side == Config.PLAYER else Color(1.0, 0.30, 0.24)
+# own_side 用于联机客机控制 BOT 阵营时反转视角：本机控制的阵营显示蓝环，对手显示红环。
+func draw_unit_team_ring(canvas: CanvasItem, center: Vector2, radius: float, side: String, own_side: String = Config.PLAYER) -> void:
+	var color: Color = Color(0.32, 0.68, 1.0) if side == own_side else Color(1.0, 0.30, 0.24)
 	var fill: Color = color
 	fill.a = 0.13
 	var ring_radius: float = max(4.0, radius * 1.08)

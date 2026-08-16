@@ -14,9 +14,12 @@ static func opponent(side: String) -> String:
 
 
 # 返回阵营的中文显示名。空字符串表示平局。
-static func side_name(side: String) -> String:
+# 传入 view_side 时以该阵营为“我方”视角；不传时保持旧语义（PLAYER=我方，BOT=Bot）。
+static func side_name(side: String, view_side: String = "") -> String:
 	if side == "":
 		return "平局"
+	if view_side != "":
+		return "我方" if side == view_side else "对方"
 	return "我方" if side == Config.PLAYER else "Bot"
 
 
