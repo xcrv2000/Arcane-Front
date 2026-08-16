@@ -45,6 +45,10 @@ MATCH_RESULTS_PATH = Path(__file__).parent / "match_results.jsonl"
 ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 ROOM_CODE_LENGTH = 4
 DISCONNECT_GRACE_SECONDS = 30.0
+HEARTBEAT_TIMEOUT_SECONDS = 10.0
+HEARTBEAT_SWEEP_INTERVAL = 5.0
+CLIENT_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+CLIENT_ID_LENGTH = 16
 
 
 def gen_room_code(existing_codes: set) -> str:
@@ -52,6 +56,10 @@ def gen_room_code(existing_codes: set) -> str:
         code = "".join(random.choices(ROOM_CODE_ALPHABET, k=ROOM_CODE_LENGTH))
         if code not in existing_codes:
             return code
+
+
+def gen_client_id() -> str:
+    return "".join(random.choices(CLIENT_ID_ALPHABET, k=CLIENT_ID_LENGTH))
 
 
 class Client:
@@ -65,6 +73,11 @@ class Client:
         self.ready: bool = False
         self.deck: List[str] = []
         self._disconnect_task: Optional[asyncio.Task] = None
+        # 断线重连：客户端身份令牌与最近活跃时间
+        self.client_id: str = ""
+        self.last_seen: float = time.time()
+        # 已被新连接替换（重连成功）后，旧连接的 EOF 不应再清理房间槽位
+        self.replaced: bool = False
 
     async def send(self, obj: dict) -> None:
         """发送 JSON Lines 包。失败时静默（不递归触发 disconnect，避免超时协程中连锁断开）"""
@@ -82,10 +95,10 @@ class Client:
     async def handle_message(self, msg: dict) -> None:
         t = str(msg.get("type", ""))
         if t == "CREATE_ROOM":
-            await self.server.handle_create(self)
+            await self.server.handle_create(self, str(msg.get("client_id", "")))
         elif t == "JOIN_ROOM":
             code = str(msg.get("room_code", "")).strip().upper()
-            await self.server.handle_join(self, code)
+            await self.server.handle_join(self, code, str(msg.get("client_id", "")))
         elif t == "READY":
             self.ready = bool(msg.get("ready", False))
             self.deck = list(msg.get("deck", []))
@@ -94,6 +107,8 @@ class Client:
             await self.server.handle_rematch(self, msg)
         elif t == "LEAVE_ROOM":
             await self.server.handle_leave_room(self)
+        elif t == "HEARTBEAT":
+            pass  # last_seen 已在 _client_loop 每次收到合法消息时刷新
         elif t == "COMMAND":
             await self.server.handle_command(self, dict(msg.get("payload", {})))
         elif t == "RESULT":
@@ -113,10 +128,15 @@ class Room:
         # 存储双方牌组（即使客户端断线重连，房间仍保留牌组用于再战/重开）
         self.host_deck: List[str] = []
         self.guest_deck: List[str] = []
+        # 断线重连：槽位为空时仍保留原客户端令牌，用于重连认领
+        self.host_client_id: str = host.client_id
+        self.guest_client_id: str = ""
         # 断线超时任务引用（重连时可取消）
         self.disconnect_task: Optional[asyncio.Task] = None
         # 命令日志：存储本局所有命令，供断线重连时回放恢复战场状态
         self.command_log: List[dict] = []
+        # 命令日志索引：(tick, side) -> command_log 下标，用于 O(1) 收敛最终命令
+        self.command_log_index: Dict[Tuple[int, str], int] = {}
 
     def peers(self, me: Client) -> List[Client]:
         out: List[Client] = []
@@ -141,11 +161,12 @@ class RelayServer:
         self.clients: List[Client] = []
         self._lock = asyncio.Lock()
 
-    async def handle_create(self, c: Client) -> None:
+    async def handle_create(self, c: Client, client_id: str = "") -> None:
         async with self._lock:
             if c.room_code is not None:
                 await c.send({"type": "ERROR", "message": "already in a room"})
                 return
+            c.client_id = client_id.strip() if client_id.strip() else gen_client_id()
             code = gen_room_code(set(self.rooms.keys()))
             room = Room(code, c)
             self.rooms[code] = room
@@ -153,9 +174,9 @@ class RelayServer:
             c.my_side = "host"
             c.ready = False
             c.deck = []
-        await c.send({"type": "ROOM_CREATED", "room_code": code, "my_side": "host"})
+        await c.send({"type": "ROOM_CREATED", "room_code": code, "my_side": "host", "client_id": c.client_id})
 
-    async def handle_join(self, c: Client, code: str) -> None:
+    async def handle_join(self, c: Client, code: str, client_id: str = "") -> None:
         if not code:
             await c.send({"type": "ERROR", "message": "room_code required"})
             return
@@ -167,20 +188,59 @@ class RelayServer:
             if c.room_code is not None:
                 await c.send({"type": "ERROR", "message": "already in a room"})
                 return
-            # 判断补位角色：主机位空→主机重连；客机位空→客机加入/重连
-            if room.host is None:
-                joining_side = "host"
+            c.client_id = client_id.strip() if client_id.strip() else gen_client_id()
+
+            # 断线重连认领：同 token 可替换仍占位的旧连接，或在槽位为空时重进同一房间
+            joining_side: Optional[str] = None
+            old_client: Optional[Client] = None
+            was_reconnect: bool = False
+            if room.host is not None and room.host is not c and room.host.client_id == c.client_id:
+                old_client = room.host
                 room.host = c
-            elif room.guest is None:
-                joining_side = "guest"
+                joining_side = "host"
+                was_reconnect = True
+            elif room.host is None and room.host_client_id == c.client_id:
+                room.host = c
+                joining_side = "host"
+                was_reconnect = True
+            elif room.guest is not None and room.guest is not c and room.guest.client_id == c.client_id:
+                old_client = room.guest
                 room.guest = c
+                joining_side = "guest"
+                was_reconnect = True
+            elif room.guest is None and room.guest_client_id == c.client_id:
+                room.guest = c
+                joining_side = "guest"
+                was_reconnect = True
+            elif room.host is None:
+                room.host = c
+                joining_side = "host"
+            elif room.guest is None:
+                room.guest = c
+                joining_side = "guest"
             else:
                 await c.send({"type": "ERROR", "message": "room full"})
                 return
+
+            if old_client is not None:
+                # 旧连接已被新连接替换，后续 EOF 不应再清理房间槽位
+                old_client.replaced = True
+                old_client.room_code = None
+                old_client.my_side = None
+                try:
+                    old_client.writer.close()
+                except Exception:
+                    pass
+
             c.room_code = code
             c.my_side = joining_side
             c.ready = False
             c.deck = []
+            if joining_side == "host":
+                room.host_client_id = c.client_id
+            else:
+                room.guest_client_id = c.client_id
+
             # 取消断线超时任务（重连时）
             if room.disconnect_task is not None and not room.disconnect_task.done():
                 room.disconnect_task.cancel()
@@ -221,10 +281,10 @@ class RelayServer:
                 await peer.send({"type": "RESUME_BATTLE"})
         elif was_started and peer is None:
             # 双方都断线（不应发生，房间应已销毁），按普通加入处理
-            await c.send({"type": "ROOM_JOINED", "room_code": code, "my_side": joining_side})
+            await c.send({"type": "ROOM_JOINED", "room_code": code, "my_side": joining_side, "client_id": c.client_id})
         else:
-            # 普通加入（房间未开始战斗）
-            await c.send({"type": "ROOM_JOINED", "room_code": code, "my_side": joining_side})
+            # 普通加入/未开始对局的房间
+            await c.send({"type": "ROOM_JOINED", "room_code": code, "my_side": joining_side, "client_id": c.client_id})
             if peer is not None:
                 await peer.send({"type": "PEER_JOINED"})
 
@@ -247,6 +307,7 @@ class RelayServer:
             room.started = True
             # 清空命令日志（新对局开始）
             room.command_log.clear()
+            room.command_log_index.clear()
             # 服务器下发共享种子 + 双方牌组
             room.seed = random.randint(1, 2_000_000_000)
             start_pkt_host = {
@@ -311,30 +372,16 @@ class RelayServer:
                 await peer.send({"type": "COMMAND", "payload": payload})
             return
         # (3) COMMAND_BATCH（内含冗余历史）或单条战斗命令：
-        #     先把"真实战斗命令"去重记录到 command_log（供断线重连回放用）
+        #     先把"真实战斗命令"按 tick+side 收敛为最终命令写入 command_log（供断线重连回放用）
         #     再整个 payload 原样转发给对端（保留冗余结构，对端解包后自动去重）
         if net_type == "COMMAND_BATCH":
-            # 把 batch 内部子命令逐条去重写入日志（供断线重连回放）
+            # 把 batch 内部子命令按到达顺序记录；同 tick+side 的 PLAY_CARD 会覆盖旧 PLAY_CARD，
+            # NO_OP 不会覆盖 PLAY_CARD，确保日志反映最终输入
             inner_cmds = payload.get("commands", []) or []
-            seen_keys = set()
             for sub in inner_cmds:
-                if not isinstance(sub, dict):
-                    continue
-                sub_net = str(sub.get("_net_type", ""))
-                if sub_net:
-                    continue  # 忽略嵌套包装
-                k = self._cmd_log_key(sub)
-                if k in seen_keys:
-                    continue
-                seen_keys.add(k)
-                # 避免重复写入历史日志（同一 key 已存在则跳过）
-                if not self._command_log_has(room, k):
-                    room.command_log.append(sub)
+                self._record_command_log(room, sub)
         else:
-            # 普通单条战斗命令：按原逻辑记录（除非已存在同 key）
-            k = self._cmd_log_key(payload)
-            if not self._command_log_has(room, k):
-                room.command_log.append(payload)
+            self._record_command_log(room, payload)
         # 原样转发给对端（保留冗余结构，抗抖动冗余在接收端生效）
         for peer in room.peers(c):
             await peer.send({"type": "COMMAND", "payload": payload})
@@ -383,6 +430,36 @@ class RelayServer:
                 if RelayServer._cmd_log_key(entry) == key:
                     return True
         return False
+
+    @staticmethod
+    def _record_command_log(room: Room, cmd) -> None:
+        """把一条真实战斗命令按 tick+side 收敛写入 command_log。
+
+        - 只记录 play_card / no_op（checksum 不参与重放，不写入）
+        - 同 tick+side 的 NO_OP 不会覆盖 PLAY_CARD（与客户端 enqueue 去重一致）
+        - 同 tick+side 的 PLAY_CARD 会覆盖旧 PLAY_CARD，保证重放使用最终输入
+        """
+        if not isinstance(cmd, dict) or "_net_type" in cmd:
+            return
+        typ = str(cmd.get("type", ""))
+        if typ not in ("play_card", "no_op"):
+            return
+        t = int(cmd.get("tick", 0))
+        s = str(cmd.get("side", ""))
+        if t <= 0 or s == "":
+            return
+        key = (t, s)
+        idx = room.command_log_index.get(key)
+        if idx is not None and 0 <= idx < len(room.command_log):
+            entry = room.command_log[idx]
+            if isinstance(entry, dict) and "_net_type" not in entry:
+                et = str(entry.get("type", ""))
+                if typ == "no_op" and et == "play_card":
+                    return  # 已有真实出牌，迟到的 NO_OP 不覆盖
+                room.command_log[idx] = cmd
+                return
+        room.command_log.append(cmd)
+        room.command_log_index[key] = len(room.command_log) - 1
 
     async def handle_rematch(self, c: Client, msg: dict) -> None:
         """Issue1: 玩家点击"再战"时通知对端"""
@@ -464,6 +541,7 @@ class RelayServer:
         # 双方回到 ROOM_WAIT 重新点准备后，服务器能再次下发 START
         room.started = False
         room.command_log.clear()
+        room.command_log_index.clear()
         if room.host is not None:
             room.host.ready = False
         if room.guest is not None:
@@ -473,10 +551,25 @@ class RelayServer:
         async with self._lock:
             if c in self.clients:
                 self.clients.remove(c)
+            # 已被重连替换的旧连接：不清理房间槽位，避免把新连接顶掉
+            if c.replaced:
+                try:
+                    c.writer.close()
+                except Exception:
+                    pass
+                return
             room = self.rooms.get(c.room_code) if c.room_code else None
 
             if room:
-                # 30秒超时判负（V0.4约定：不做完整重连）
+                # 只有当前槽位仍指向该连接时才清理；若已被新连接替换则上面已返回
+                is_current_slot = (room.host is c) or (room.guest is c)
+                if not is_current_slot:
+                    try:
+                        c.writer.close()
+                    except Exception:
+                        pass
+                    return
+                # 30秒超时判负（V0.4约定：超时未重连则断线方负）
                 if c.my_side == "host":
                     room.host = None
                     losing_side = "host"
@@ -582,6 +675,7 @@ class RelayServer:
                 line = await c.reader.readline()
                 if not line:
                     break
+                c.last_seen = time.time()
                 try:
                     msg = json.loads(line.decode("utf-8").strip())
                 except Exception:
@@ -602,6 +696,18 @@ class RelayServer:
             self.clients.append(c)
         await self._client_loop(c)
 
+    async def heartbeat_sweep(self) -> None:
+        """周期清理心跳超时的客户端，让对端尽快收到 PEER_DISCONNECT。"""
+        while True:
+            await asyncio.sleep(HEARTBEAT_SWEEP_INTERVAL)
+            now = time.time()
+            stale = [
+                c for c in list(self.clients)
+                if now - c.last_seen > HEARTBEAT_TIMEOUT_SECONDS
+            ]
+            for c in stale:
+                await self._disconnect_client(c, reason="heartbeat_timeout")
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Arcane-Front V0.4 relay server")
@@ -611,6 +717,7 @@ async def main() -> None:
 
     server = RelayServer()
     srv = await asyncio.start_server(server.client_connected, host=args.host, port=args.port)
+    asyncio.create_task(server.heartbeat_sweep())
     MATCH_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     print(
         f"[Arcane-Front relay] listening on {args.host}:{args.port} ; results -> {MATCH_RESULTS_PATH}",

@@ -59,6 +59,14 @@ var online_status_text: String = ""  # 房间界面顶部状态栏
 var join_input_text: String = ""     # 加入房间时的临时输入
 var disconnect_countdown: float = -1.0  # -1=未启动；>0=倒计时中（秒）
 
+# —— 断线重连：本机掉线后自动尝试重连（不立即结束对局）——
+var reconnecting_locally: bool = false
+var reconnect_attempts: int = 0
+var reconnect_connecting: bool = false
+var reconnect_join_sent: bool = false
+var reconnect_timer: float = -1.0
+var heartbeat_timer: float = 0.0
+
 # Issue1: 对方申请了再战（RESULT界面提示）
 var peer_rematch_requested: bool = false
 # Issue2: 对方退出了房间（""=无；"host"=房主退出；"guest"=客机退出）
@@ -189,6 +197,23 @@ func _process(delta: float) -> void:
 	# 网络轮询：每帧直接 poll（替代 Timer 的 0.033s 延迟，确保对端命令及时接收）
 	if net != null and net.is_attached():
 		net.poll()
+	# 心跳：保持服务器能及时感知本机在线状态（静默房间/对局也会发送）
+	if net != null and net.is_tcp_connected() and (online_mode or room_code != ""):
+		heartbeat_timer -= delta
+		if heartbeat_timer <= 0.0:
+			heartbeat_timer = 2.0
+			net.send_heartbeat()
+	# 本机断线重连：定时发起重连、等待连接建立后补发 JOIN_ROOM
+	if reconnecting_locally:
+		if reconnect_timer > 0.0:
+			reconnect_timer = maxf(0.0, reconnect_timer - delta)
+			if reconnect_timer <= 0.0:
+				_attempt_reconnect()
+		if reconnect_connecting and net != null and net.is_tcp_connected() and not reconnect_join_sent:
+			reconnect_join_sent = true
+			online_status_text = "已重连服务器，正在恢复房间…"
+			net.send_join_room(room_code)
+			queue_redraw()
 	# 断线倒计时在任何界面下都需要更新
 	if disconnect_countdown > 0.0:
 		_tick_disconnect_countdown(delta)
@@ -214,9 +239,17 @@ func _process(delta: float) -> void:
 		queue_redraw()
 
 	if screen_mode == ScreenMode.BATTLE:
-		# 倒计时中：完全跳过 accumulate 与推进循环（不攒 tick 债）
+		# 外部校验（如迟到 CHECKSUM 到达）发现 desync 时，下一帧立即进入结果页
+		if scheduler.desynced:
+			simulator.running = false
+			painter.override_winner = ""
+			painter.network_disconnect = false
+			screen_mode = ScreenMode.RESULT
+			queue_redraw()
+			return
+		# 断线/恢复倒计时中：完全跳过 accumulate 与推进循环（不攒 tick 债）
 		# 倒计时结束的那一帧（resume_now=true）也先跳过，让扩展窗口生效，下一帧再正常推进
-		if battle_restart_countdown <= 0.0 and not resume_now:
+		if disconnect_countdown <= 0.0 and battle_restart_countdown <= 0.0 and not resume_now:
 			var tick_count: int = scheduler.accumulate(delta)
 			for i in range(tick_count):
 				if scheduler.desynced:
@@ -764,8 +797,12 @@ func _draw_disconnect_countdown() -> void:
 	var h: float = size.y
 	var panel: Rect2 = Rect2(Vector2(w * 0.5 - 220.0, h * 0.5 - 40.0), Vector2(440.0, 80.0))
 	helpers.draw_panel(self, panel, Color(0.18, 0.08, 0.08, 0.92), 10.0, Color(0.92, 0.30, 0.28), 2.0)
-	helpers.draw_text_line(self, "对方连接中断", Rect2(panel.position + Vector2(14.0, 16.0), Vector2(panel.size.x - 28.0, 22.0)), 18, Color(0.98, 0.86, 0.40), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(self, "等待 %d 秒后判负（%s）" % [int(ceilf(disconnect_countdown)), room_code], Rect2(panel.position + Vector2(14.0, 44.0), Vector2(panel.size.x - 28.0, 18.0)), 13, Color(0.90, 0.80, 0.70), HORIZONTAL_ALIGNMENT_CENTER)
+	if reconnecting_locally:
+		helpers.draw_text_line(self, "本机连接中断，正在重连", Rect2(panel.position + Vector2(14.0, 16.0), Vector2(panel.size.x - 28.0, 22.0)), 18, Color(0.98, 0.86, 0.40), HORIZONTAL_ALIGNMENT_CENTER)
+		helpers.draw_text_line(self, "剩余 %d 秒，超过后本局结束（%s）" % [int(ceilf(disconnect_countdown)), room_code], Rect2(panel.position + Vector2(14.0, 44.0), Vector2(panel.size.x - 28.0, 18.0)), 13, Color(0.90, 0.80, 0.70), HORIZONTAL_ALIGNMENT_CENTER)
+	else:
+		helpers.draw_text_line(self, "对方连接中断", Rect2(panel.position + Vector2(14.0, 16.0), Vector2(panel.size.x - 28.0, 22.0)), 18, Color(0.98, 0.86, 0.40), HORIZONTAL_ALIGNMENT_CENTER)
+		helpers.draw_text_line(self, "等待 %d 秒后判负（%s）" % [int(ceilf(disconnect_countdown)), room_code], Rect2(panel.position + Vector2(14.0, 44.0), Vector2(panel.size.x - 28.0, 18.0)), 13, Color(0.90, 0.80, 0.70), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 # Issue5: 战斗恢复倒计时覆盖层
@@ -881,10 +918,23 @@ func _draw_net_status_hud() -> void:
 # ———————————————— V0.4 联机：网络信号处理 ————————————————
 func _on_connected() -> void:
 	online_status_text = "已连接服务器"
+	if reconnecting_locally and room_code != "":
+		# 重连时 TCP 已恢复，立即补发 JOIN_ROOM（带 client_id，服务器据此认领旧房间/旧对局）
+		reconnect_join_sent = true
+		online_status_text = "已重连服务器，正在恢复房间…"
+		net.send_join_room(room_code)
 	queue_redraw()
 
 
 func _on_conn_fail(reason: String) -> void:
+	if reconnecting_locally:
+		# 重连失败不销毁房间状态，稍后自动重试
+		reconnect_connecting = false
+		reconnect_join_sent = false
+		reconnect_timer = min(3.0, 0.5 + float(reconnect_attempts) * 0.5)
+		online_status_text = "重连失败（%s），%d 秒后重试…" % [reason, int(ceilf(reconnect_timer))]
+		queue_redraw()
+		return
 	online_status_text = "连接失败：%s（点击返回主界面）" % reason
 	room_code = ""
 	my_ready = false
@@ -893,13 +943,24 @@ func _on_conn_fail(reason: String) -> void:
 
 
 func _on_disconnected() -> void:
+	# 已处于重连流程时再次断开：不结束对局，安排下一次重试
+	if reconnecting_locally:
+		reconnect_connecting = false
+		reconnect_join_sent = false
+		reconnect_timer = min(3.0, 0.5 + float(reconnect_attempts) * 0.5)
+		online_status_text = "重连连接再次断开，%d 秒后重试…" % int(ceilf(reconnect_timer))
+		queue_redraw()
+		return
+	# 处于房间或对局中时，不立即判负/结束，而是进入自动重连流程
+	if (screen_mode == ScreenMode.ROOM_WAIT or screen_mode == ScreenMode.BATTLE) and room_code != "" and not reconnecting_locally:
+		_start_reconnect()
+		return
 	online_status_text = "服务器断开"
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
-	# 对局中如果未结束则进入结果页
+	# 对局中且无法/未进入重连（例如房间已解散）则进入网络断线结果页
 	if screen_mode == ScreenMode.BATTLE:
-		simulator.running = false
-		screen_mode = ScreenMode.RESULT
+		_enter_network_disconnect_result()
 	queue_redraw()
 
 
@@ -915,6 +976,17 @@ func _on_room_created(code: String, side: String) -> void:
 
 
 func _on_room_joined(code: String, side: String) -> void:
+	if reconnecting_locally:
+		# 重连成功但服务器回复的是普通 ROOM_JOINED，说明原对局已结束/房间已重置；
+		# 若原本在战斗中，统一进入网络断线结果页，避免“平局胜利”或无提示冻结。
+		reconnecting_locally = false
+		reconnect_connecting = false
+		reconnect_join_sent = false
+		reconnect_timer = -1.0
+		disconnect_countdown = -1.0
+		if screen_mode == ScreenMode.BATTLE:
+			_enter_network_disconnect_result()
+			return
 	room_code = code
 	my_side = side
 	my_ready = false
@@ -951,12 +1023,17 @@ func _on_peer_disconnect(grace_seconds: float) -> void:
 
 
 func _on_opponent_win_by_dc(winner_side: String, _rc: String) -> void:
-	# 服务器判定断线者负
+	# 服务器判定断线者负；双方统一显示“网络断线”提示，不再出现一方“平局胜利”/一方无提示
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
 	var i_won: bool = (winner_side == my_side)
 	simulator.running = false
 	painter.override_winner = my_game_side if i_won else peer_game_side
+	painter.network_disconnect = true
 	screen_mode = ScreenMode.RESULT
 	queue_redraw()
 
@@ -981,9 +1058,14 @@ func _on_peer_command(_cmd_dict: Dictionary) -> void:
 func _on_result_received(winner_side: String, _rc: String) -> void:
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
 	simulator.running = false
 	peer_rematch_requested = false
 	peer_left_reason = ""
+	painter.network_disconnect = false
 	if winner_side == "draw":
 		painter.override_winner = ""
 	else:
@@ -994,6 +1076,13 @@ func _on_result_received(winner_side: String, _rc: String) -> void:
 
 
 func _on_server_error(message: String) -> void:
+	if reconnecting_locally:
+		reconnect_connecting = false
+		reconnect_join_sent = false
+		reconnect_timer = min(3.0, 0.5 + float(reconnect_attempts) * 0.5)
+		online_status_text = "重连被服务器拒绝（%s），%d 秒后重试…" % [message, int(ceilf(reconnect_timer))]
+		queue_redraw()
+		return
 	online_status_text = "服务器报错：%s" % message
 	queue_redraw()
 
@@ -1021,6 +1110,11 @@ func _on_peer_left(who: String) -> void:
 # 主机端（非重连方）：无 commands 数据，只需填充对方NO_OP并恢复倒计时
 # 客机端（重连方）：有 commands 数据，需要回放所有命令恢复战场，填充双方滑动窗口NO_OP
 func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_deck: Array[String], peer_deck: Array[String]) -> void:
+	# 重连成功：清除本机重连状态；对端恢复信号也会走到这里
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
 	peer_rematch_requested = false
@@ -1116,7 +1210,12 @@ func _back_to_room_wait() -> void:
 	my_ready = false
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
 	painter.override_winner = ""
+	painter.network_disconnect = false
 	simulator.running = false
 	scheduler.reset()
 	scheduler.strict_wait = true
@@ -1222,7 +1321,12 @@ func _request_online_rematch() -> void:
 	simulator.running = false
 	bot_brain.reset()
 	painter.override_winner = ""
+	painter.network_disconnect = false
 	disconnect_countdown = -1.0
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
 	peer_rematch_requested = false
 	# 重置准备状态
 	my_ready = false
@@ -1252,9 +1356,14 @@ func _leave_room() -> void:
 	scheduler.sides = [Config.PLAYER, Config.BOT]
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
 	peer_rematch_requested = false
 	peer_left_reason = ""
 	painter.override_winner = ""
+	painter.network_disconnect = false
 	painter.controlled_side = Config.PLAYER
 	selected_card_ids = saved_deck_ids.duplicate()
 	screen_mode = ScreenMode.MAIN_MENU
@@ -1278,6 +1387,11 @@ func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> v
 	simulator.start_battle()
 	# 开局重置上一局可能污染的 UI 覆盖胜者显示（上局 RESULT 的 override_winner 会带进来）
 	painter.override_winner = ""
+	painter.network_disconnect = false
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
 	# 联机模式 bot_brain 不参与思考，但重置状态以防上一局残留影响
 	bot_brain.reset()
 	# 同步我的卡组到卡牌栏（host端=player端卡组，guest端=bot端卡组=my_deck）
@@ -1391,13 +1505,72 @@ func _perform_rollback() -> void:
 	queue_redraw()
 
 
+# ———————————————— 断线自动重连 ————————————————
+func _start_reconnect() -> void:
+	reconnecting_locally = true
+	reconnect_attempts = 0
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = 0.01
+	disconnect_countdown = Config.DISCONNECT_PAUSE_SECONDS
+	if screen_mode == ScreenMode.BATTLE:
+		scheduler.paused = true
+		scheduler.paused_reason = "本机连接中断，正在重连"
+		online_status_text = "连接中断，正在尝试重连…（%ds）" % int(ceilf(disconnect_countdown))
+	else:
+		online_status_text = "连接中断，正在尝试重连…（%ds）" % int(ceilf(disconnect_countdown))
+	queue_redraw()
+
+
+func _attempt_reconnect() -> void:
+	if not reconnecting_locally:
+		return
+	reconnect_attempts += 1
+	reconnect_connecting = true
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
+	online_status_text = "正在重连（第 %d 次）…" % reconnect_attempts
+	queue_redraw()
+	if net != null:
+		net.connect_to_server("", 0)
+
+
+func _on_reconnect_timeout() -> void:
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
+	if screen_mode == ScreenMode.BATTLE:
+		_enter_network_disconnect_result()
+	else:
+		online_status_text = "无法重新连接服务器，请返回主界面。"
+		queue_redraw()
+
+
+func _enter_network_disconnect_result() -> void:
+	reconnecting_locally = false
+	reconnect_connecting = false
+	reconnect_join_sent = false
+	reconnect_timer = -1.0
+	disconnect_countdown = -1.0
+	battle_restart_countdown = -1.0
+	simulator.running = false
+	painter.override_winner = ""
+	painter.network_disconnect = true
+	screen_mode = ScreenMode.RESULT
+	queue_redraw()
+
+
 # ———————————————— V0.4 联机：断线倒计时 tick ————————————————
 func _tick_disconnect_countdown(dt: float) -> void:
 	if disconnect_countdown > 0.0:
 		disconnect_countdown = maxf(0.0, disconnect_countdown - dt)
 		if disconnect_countdown <= 0.0:
 			disconnect_countdown = 0.0
-			online_status_text = "等待重连超时，服务器将判负（如未跳转请手动返回）"
+			if reconnecting_locally:
+				_on_reconnect_timeout()
+			else:
+				online_status_text = "等待重连超时，服务器将判负（如未跳转请手动返回）"
 
 
 # —— 按钮绘制（不修改 CanvasHelpers，就地实现）——

@@ -114,23 +114,25 @@ func enqueue_command_batch(cmd_list: Array) -> int:
 		if t <= current_tick and cmd_type == Command.CMD_NO_OP:
 			continue
 
-		# —— V0.5 回滚：跳过已过期的 CHECKSUM（校验点已过）——
-		if t <= current_tick and cmd_type == Command.CMD_CHECKSUM:
-			continue
-
 		# —— V0.5 回滚：迟到的真实命令（play_card）——
 		# 该 tick 已被消费（用了 NO_OP 占位），真实命令现在才到。
-		# 检查 consumed_commands 中该 tick/side 是否为 NO_OP → 是则触发回滚。
+		# 检查 consumed_commands 中该 tick/side 是否为 NO_OP 或已被更旧 PLAY_CARD 消费；
+		# 若为更旧 PLAY_CARD 且本次命令不同，也触发回滚（覆盖本地双击/同 tick 改命令场景）。
 		if t <= current_tick and cmd_type == Command.CMD_PLAY_CARD:
 			late_arrival_count += 1
 			if _consumed_commands.has(t):
 				var cmds_at_t: Array = _consumed_commands[t]
 				for c in cmds_at_t:
-					if String(c.get("side", "")) == side and String(c.get("type", "")) == Command.CMD_NO_OP:
-						# 发现该 tick 的 NO_OP 被消费了 → 触发回滚
-						rollback_pending = true
-						rollback_tick = t
-						rollback_cmd = cmd
+					if String(c.get("side", "")) == side:
+						var consumed_type: String = String(c.get("type", ""))
+						var need_rollback: bool = consumed_type == Command.CMD_NO_OP
+						if consumed_type == Command.CMD_PLAY_CARD and not _same_play_command(c, cmd):
+							need_rollback = true
+						if need_rollback:
+							# 发现该 tick 的真实命令与已消费命令不一致 → 触发回滚
+							rollback_pending = true
+							rollback_tick = t
+							rollback_cmd = cmd
 						break
 			continue  # 不入队（由控制器回滚处理）
 
@@ -150,6 +152,9 @@ func enqueue_command_batch(cmd_list: Array) -> int:
 					continue  # 都是 NO_OP，跳过
 		enqueue_command(cmd)
 		added += 1
+		# 迟到的 CHECKSUM 不再丢弃：只要双方校验和已到齐就立即比对，避免弱网下错过 desync 检测
+		if cmd_type == "checksum":
+			verify_checksum_for_tick(t)
 	return added
 
 
@@ -297,6 +302,15 @@ func _missing_sides_for_tick(tick: int) -> String:
 		if not tick_table.has(side):
 			missing.append(side)
 	return ", ".join(missing)
+
+
+# 判断两条 PLAY_CARD 是否完全相同（用于迟到命令回滚判断）
+func _same_play_command(a: Dictionary, b: Dictionary) -> bool:
+	return (
+		String(a.get("card_id", "")) == String(b.get("card_id", ""))
+		and int(a.get("target_x_fp", 0)) == int(b.get("target_x_fp", 0))
+		and int(a.get("target_y_fp", 0)) == int(b.get("target_y_fp", 0))
+	)
 
 
 # —— V0.5：记录命令到达提前量 ——

@@ -38,6 +38,8 @@ var controlled_side: String = Config.PLAYER  # 当前本机玩家在模拟器中
 
 # V0.4 联机：断线判负时覆盖胜者显示（""=不覆盖，用 simulator.match_winner）
 var override_winner: String = ""
+# 网络断线结果：为 true 时结算页统一显示“网络断线”，而不是“XX胜利/平局胜利”
+var network_disconnect: bool = false
 
 # Issue1/2: RESULT界面状态
 # "normal"=正常再战按钮; "disabled"=暗色不可按(房间已解散); "back_to_room"=回到房间; "rematch_wait"=对方已申请再战
@@ -764,8 +766,12 @@ func draw_result_overlay(canvas: CanvasItem) -> void:
 	var panel: Rect2 = Rect2(Vector2((view_size.x - panel_width) * 0.5, (view_size.y - panel_height) * 0.5), Vector2(panel_width, panel_height))
 	helpers.draw_panel(canvas, panel, Color(0.11, 0.13, 0.16), 8.0, Color(0.38, 0.46, 0.55), 2.0)
 	var winner: String = override_winner if override_winner != "" else simulator.match_winner
-	helpers.draw_text_line(canvas, "%s胜利" % MapMath.side_name(winner, controlled_side), Rect2(panel.position + Vector2(18.0, 16.0), Vector2(panel.size.x - 36.0, 28.0)), 25, Color(0.94, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "用时 %s；单位阵亡 %d；法术施放 %d" % [_format_time(simulator.battle_time()), int(simulator.stats["units_lost"]), int(simulator.stats["spell_casts"])], Rect2(panel.position + Vector2(18.0, 48.0), Vector2(panel.size.x - 36.0, 20.0)), 14, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	if network_disconnect:
+		helpers.draw_text_line(canvas, "网络断线", Rect2(panel.position + Vector2(18.0, 16.0), Vector2(panel.size.x - 36.0, 28.0)), 25, Color(0.98, 0.74, 0.40), HORIZONTAL_ALIGNMENT_CENTER)
+		helpers.draw_text_line(canvas, "对局因网络中断结束，双方已收到相同提示", Rect2(panel.position + Vector2(18.0, 48.0), Vector2(panel.size.x - 36.0, 20.0)), 14, Color(0.94, 0.88, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
+	else:
+		helpers.draw_text_line(canvas, "%s胜利" % MapMath.side_name(winner, controlled_side), Rect2(panel.position + Vector2(18.0, 16.0), Vector2(panel.size.x - 36.0, 28.0)), 25, Color(0.94, 0.96, 1.0), HORIZONTAL_ALIGNMENT_CENTER)
+		helpers.draw_text_line(canvas, "用时 %s；单位阵亡 %d；法术施放 %d" % [_format_time(simulator.battle_time()), int(simulator.stats["units_lost"]), int(simulator.stats["spell_casts"])], Rect2(panel.position + Vector2(18.0, 48.0), Vector2(panel.size.x - 36.0, 20.0)), 14, Color(0.72, 0.78, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
 	var my_side: String = controlled_side
 	var enemy_side: String = MapMath.opponent(controlled_side)
 	var my_clear: int = int(simulator.bases[my_side]["clear_count"])

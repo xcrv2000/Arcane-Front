@@ -53,6 +53,9 @@ var default_port: int = 8765
 # V0.5：冗余发送开关（默认开启）
 var enable_redundancy: bool = true
 
+# —— 断线重连：本端身份令牌（服务器在 ROOM_CREATED/ROOM_JOINED 时下发）——
+var client_id: String = ""
+
 # 运行时
 var _tcp: StreamPeerTCP = StreamPeerTCP.new()
 var _recv_buf: PackedByteArray = PackedByteArray()
@@ -72,6 +75,7 @@ func reset_send_history() -> void:
 # —— 连接控制 ——
 func connect_to_server(host: String = "", port: int = 0) -> void:
 	disconnect_from_server()
+	_was_connected = false
 	var h: String = host if host != "" else default_host
 	var p: int = port if port > 0 else default_port
 	var ok: Error = _tcp.connect_to_host(h, p)
@@ -88,6 +92,7 @@ func connect_to_server(host: String = "", port: int = 0) -> void:
 
 func disconnect_from_server() -> void:
 	_running = false
+	_was_connected = false
 	# 轮询由 attach_to_node 的 Timer 驱动，无需手动停止
 	if _tcp != null:
 		_tcp.disconnect_from_host()
@@ -103,11 +108,21 @@ func is_tcp_connected() -> bool:
 
 # —— 房间与对局请求（客户端 → 服务器）——
 func send_create_room() -> void:
-	_send_json({"type": "CREATE_ROOM"})
+	var payload: Dictionary = {"type": "CREATE_ROOM"}
+	if client_id != "":
+		payload["client_id"] = client_id
+	_send_json(payload)
 
 
 func send_join_room(room_code: String) -> void:
-	_send_json({"type": "JOIN_ROOM", "room_code": room_code.strip_edges().to_upper()})
+	var payload: Dictionary = {"type": "JOIN_ROOM", "room_code": room_code.strip_edges().to_upper()}
+	if client_id != "":
+		payload["client_id"] = client_id
+	_send_json(payload)
+
+
+func send_heartbeat() -> void:
+	_send_json({"type": "HEARTBEAT"})
 
 
 func send_ready(ready_flag: bool, my_deck: Array[String]) -> void:
@@ -250,8 +265,10 @@ func _handle_line(text: String) -> void:
 	var t: String = String(msg.get("type", ""))
 	match t:
 		"ROOM_CREATED":
+			client_id = String(msg.get("client_id", client_id))
 			emit_signal("room_created", String(msg.get("room_code", "")), String(msg.get("my_side", "host")))
 		"ROOM_JOINED":
+			client_id = String(msg.get("client_id", client_id))
 			emit_signal("room_joined", String(msg.get("room_code", "")), String(msg.get("my_side", "guest")))
 		"PEER_JOINED":
 			emit_signal("peer_joined")
