@@ -801,9 +801,10 @@
       "include_enemy_deaths": false,
       "play_cooldown": 10.0,
       "max_mana_refund": 10.0,
+      "deckable": false,
       "ai_deckable": false,
       "color": "#9b84bd",
-      "trial_note": "百骸公国试调数值；仅玩家可编入牌组，Bot 不携带；内置冷却 10 秒；每次施放的区域最多实际回复 10 点法力；6 秒内区域中每有 1 名己方单位阵亡回复 1 点法力，同玩家重叠区域不重复结算。",
+      "trial_note": "当前禁用，玩家与 Bot 均不可携带；卡牌仍保留在图鉴中。内置冷却 10 秒；每次施放的区域最多实际回复 10 点法力；6 秒内区域中每有 1 名己方单位阵亡回复 1 点法力，同玩家重叠区域不重复结算。",
       "task": {
         "type": "all_unit_death_count",
         "summary": "全局双方累计阵亡 100 名单位。",

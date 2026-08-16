@@ -383,6 +383,7 @@ def generate_designer_doc(data: dict[str, Any]) -> str:
             [
                 f"### {card.get('name', '')}",
                 "",
+                f"- 携带状态：{'可携带' if card.get('deckable', True) else '禁用（不可携带）'}",
                 f"- 标签：{'、'.join(card.get('tags', []))}",
                 f"- 用途：{card.get('trial_note', '')}",
                 f"- 任务：{card.get('task', {}).get('summary', '')}",

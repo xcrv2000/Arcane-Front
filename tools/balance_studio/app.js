@@ -26,6 +26,7 @@
         { path: "role", label: "定位", type: "text" },
         { path: "kind", label: "类型", type: "select", options: ["unit", "spell"] },
         { path: "tags", label: "标签（逗号分隔）", type: "tag-list", wide: true, note: "可同时填写系列与机制标签；支持中文或英文逗号。" },
+        { path: "deckable", label: "允许携带（关闭即禁用）", type: "checkbox", defaultTrue: true, wide: true },
         { path: "cost", label: "费用", type: "number", step: 1 },
         { path: "color", label: "颜色", type: "color" },
         { path: "trial_note", label: "用途说明", type: "textarea", wide: true }
@@ -418,12 +419,13 @@
       const meta = card.kind === "unit"
         ? `DPS ${formatNumber(metrics.cardDps)} · 生命 ${formatNumber(metrics.totalHp)}`
         : `伤害/费 ${formatNumber(metrics.damagePerMana)} · 面积 ${formatNumber(metrics.coverageArea)}`;
+      const availability = card.deckable === false ? " · 禁用" : "";
       return `
         <button class="card-row ${card.id === state.selectedId ? "is-active" : ""}" type="button" data-card-id="${escapeAttr(card.id)}">
           <span class="card-token" style="background:${safeColor(card.color)}">${escapeHtml(card.short_name || "?")}</span>
           <span class="card-title">
             <strong>${escapeHtml(card.name)}</strong>
-            <span>${escapeHtml(card.role)} · ${escapeHtml(meta)}</span>
+            <span>${escapeHtml(card.role)} · ${escapeHtml(meta)}${availability}</span>
           </span>
           <span class="card-cost">${formatNumber(card.cost)}费</span>
         </button>
@@ -545,9 +547,10 @@
     }
 
     if (field.type === "checkbox") {
+      const checked = field.defaultTrue ? value !== false : Boolean(value);
       return `
         <label class="checkbox-field"${wide}>
-          <input data-path="${escapeAttr(field.path)}" data-type="checkbox" type="checkbox" ${value ? "checked" : ""}>
+          <input data-path="${escapeAttr(field.path)}" data-type="checkbox" type="checkbox" ${checked ? "checked" : ""}>
           <span>${escapeHtml(field.label)}</span>
         </label>
       `;
