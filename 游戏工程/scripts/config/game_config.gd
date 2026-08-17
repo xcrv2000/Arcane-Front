@@ -58,6 +58,8 @@ const TICK_RATE: int = 60               # 模拟 tick 频率 Hz
 const TICK_DT: float = 1.0 / float(TICK_RATE)  # ≈0.0167s 每 tick
 const INPUT_DELAY_TICKS: int = 4       # 输入延迟 tick（4 tick ≈ 67ms @60Hz）
 const DESYNC_CHECK_INTERVAL: int = 30  # 每 30 tick（0.5s）做一次校验和比对
+# 校验和延迟验证：等 tick 落后足够多再比对，给迟到命令/回滚留出稳定窗口，避免误报 desync
+const DESYNC_VERIFY_DELAY_TICKS: int = 240  # 4 秒，覆盖回滚窗口 + 对端领先/网络传输余量，避免误报 desync
 
 # —— V0.4 定点数精度约定（P1 引入）——
 const FP_SCALE: int = 1000              # Q*1000 定点精度

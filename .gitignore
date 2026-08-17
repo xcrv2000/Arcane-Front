@@ -1,0 +1,2 @@
+# 服务端部署工具本地配置（含服务器地址、密钥路径），不提交仓库
+tools/deploy_relay/deploy.config.json

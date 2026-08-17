@@ -65,6 +65,8 @@ const SNAPSHOT_BUFFER_SIZE: int = 120  # 保留最近 2 秒的快照（60Hz × 2
 var rollback_pending: bool = false
 var rollback_tick: int = -1
 var rollback_cmd: Dictionary = {}
+# 同一批到达的多个迟到命令都要应用；rollback_tick 为其中最早 tick
+var rollback_cmds: Array = []
 # 迟到命令计数（用于自适应延迟：有迟到→增大 input_delay）
 var late_arrival_count: int = 0
 
@@ -120,20 +122,31 @@ func enqueue_command_batch(cmd_list: Array) -> int:
 		# 若为更旧 PLAY_CARD 且本次命令不同，也触发回滚（覆盖本地双击/同 tick 改命令场景）。
 		if t <= current_tick and cmd_type == Command.CMD_PLAY_CARD:
 			late_arrival_count += 1
+			var need_rollback: bool = false
 			if _consumed_commands.has(t):
 				var cmds_at_t: Array = _consumed_commands[t]
 				for c in cmds_at_t:
 					if String(c.get("side", "")) == side:
 						var consumed_type: String = String(c.get("type", ""))
-						var need_rollback: bool = consumed_type == Command.CMD_NO_OP
+						need_rollback = consumed_type == Command.CMD_NO_OP
 						if consumed_type == Command.CMD_PLAY_CARD and not _same_play_command(c, cmd):
 							need_rollback = true
-						if need_rollback:
-							# 发现该 tick 的真实命令与已消费命令不一致 → 触发回滚
-							rollback_pending = true
-							rollback_tick = t
-							rollback_cmd = cmd
 						break
+			if need_rollback:
+				# 同一批可能包含多个迟到的真实命令：全部收集，回滚时统一替换再重放
+				rollback_pending = true
+				if rollback_tick == -1 or t < rollback_tick:
+					rollback_tick = t
+				rollback_cmd = cmd
+				var replaced: bool = false
+				for i in range(rollback_cmds.size()):
+					var rc: Dictionary = rollback_cmds[i]
+					if int(rc.get("tick", 0)) == t and String(rc.get("side", "")) == side:
+						rollback_cmds[i] = cmd
+						replaced = true
+						break
+				if not replaced:
+					rollback_cmds.append(cmd)
 			continue  # 不入队（由控制器回滚处理）
 
 		# —— 正常去重逻辑 ——
@@ -266,6 +279,9 @@ func verify_checksum_for_tick(tick: int) -> Dictionary:
 		return {"ok": true, "mismatch": null}
 	if not received_checksums.has(tick):
 		return {"ok": true, "mismatch": null}
+	# 延迟验证：tick 太新时先不比对，等待可能的迟到命令/回滚稳定下来
+	if current_tick - tick < Config.DESYNC_VERIFY_DELAY_TICKS:
+		return {"ok": true, "mismatch": null}
 	var cs_tbl: Dictionary = received_checksums[tick]
 	if cs_tbl.size() < sides.size():
 		# 尚未收齐，等下轮
@@ -291,6 +307,18 @@ func verify_checksum_for_tick(tick: int) -> Dictionary:
 	received_checksums.erase(tick)
 	desynced = false
 	desync_info = {}
+	return {"ok": true, "mismatch": null}
+
+
+# 检查所有已经“足够旧”的 CHECKSUM（延迟窗口已过），返回第一个 mismatch。
+func verify_ready_checksums() -> Dictionary:
+	var keys: Array = received_checksums.keys()
+	for raw_t in keys:
+		var t: int = int(raw_t)
+		if current_tick - t >= Config.DESYNC_VERIFY_DELAY_TICKS:
+			var vr: Dictionary = verify_checksum_for_tick(t)
+			if not bool(vr.get("ok", true)):
+				return vr
 	return {"ok": true, "mismatch": null}
 
 
@@ -408,6 +436,7 @@ func reset() -> void:
 	rollback_pending = false
 	rollback_tick = -1
 	rollback_cmd = {}
+	rollback_cmds.clear()
 	late_arrival_count = 0
 
 
@@ -450,3 +479,4 @@ func clear_rollback_state() -> void:
 	rollback_pending = false
 	rollback_tick = -1
 	rollback_cmd = {}
+	rollback_cmds.clear()

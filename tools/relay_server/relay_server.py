@@ -109,6 +109,8 @@ class Client:
             await self.server.handle_leave_room(self)
         elif t == "HEARTBEAT":
             pass  # last_seen 已在 _client_loop 每次收到合法消息时刷新
+        elif t == "RESYNC":
+            await self.server.handle_resync(self, msg)
         elif t == "COMMAND":
             await self.server.handle_command(self, dict(msg.get("payload", {})))
         elif t == "RESULT":
@@ -133,7 +135,10 @@ class Room:
         self.guest_client_id: str = ""
         # 断线超时任务引用（重连时可取消）
         self.disconnect_task: Optional[asyncio.Task] = None
-        # 命令日志：存储本局所有命令，供断线重连时回放恢复战场状态
+        # desync 重同步：记录请求的目标 tick，并防止重复广播
+        self.resync_tick: Optional[int] = None
+        self.resync_pending: bool = False
+        # 命令日志：存储本局所有命令，供断线重连/desync 重同步回放恢复战场状态
         self.command_log: List[dict] = []
         # 命令日志索引：(tick, side) -> command_log 下标，用于 O(1) 收敛最终命令
         self.command_log_index: Dict[Tuple[int, str], int] = {}
@@ -305,6 +310,8 @@ class RelayServer:
             await peer.send({"type": "PEER_READY", "ready": c.ready, "side": c.my_side})
         if room.all_ready() and not room.started:
             room.started = True
+            room.resync_tick = None
+            room.resync_pending = False
             # 清空命令日志（新对局开始）
             room.command_log.clear()
             room.command_log_index.clear()
@@ -540,12 +547,74 @@ class RelayServer:
         # 重置房间 started 与双方 ready 状态，支持"再战"：
         # 双方回到 ROOM_WAIT 重新点准备后，服务器能再次下发 START
         room.started = False
+        room.resync_tick = None
+        room.resync_pending = False
         room.command_log.clear()
         room.command_log_index.clear()
         if room.host is not None:
             room.host.ready = False
         if room.guest is not None:
             room.guest.ready = False
+
+    async def handle_resync(self, c: Client, msg: dict) -> None:
+        """desync 重同步：收集双方请求的目标 tick，稍后统一广播命令日志。"""
+        if not c.room_code:
+            return
+        room = self.rooms.get(c.room_code)
+        if not room or not room.started:
+            return
+        tick = max(1, int(msg.get("tick", 0)))
+        should_launch = False
+        async with self._lock:
+            if room.resync_tick is None or tick < room.resync_tick:
+                room.resync_tick = tick
+            if not room.resync_pending:
+                room.resync_pending = True
+                should_launch = True
+        if should_launch:
+            # 稍等片刻，尽量收集双方各自报告的 tick，取较小值作为共同恢复点
+            asyncio.create_task(self._broadcast_resync_after(room, 0.3))
+
+    async def _broadcast_resync_after(self, room: Room, delay: float) -> None:
+        await asyncio.sleep(delay)
+        async with self._lock:
+            if self.rooms.get(room.code) is not room:
+                return
+            if room.resync_tick is None:
+                room.resync_pending = False
+                return
+            tick = room.resync_tick
+            room.resync_tick = None
+            room.resync_pending = False
+            commands = [
+                cmd for cmd in room.command_log
+                if isinstance(cmd, dict) and int(cmd.get("tick", 0)) <= tick
+            ]
+            seed = room.seed
+            host_deck = list(room.host_deck)
+            guest_deck = list(room.guest_deck)
+            host = room.host
+            guest = room.guest
+        if host is not None:
+            await host.send({
+                "type": "RESYNC_DATA",
+                "target_tick": tick,
+                "seed": seed,
+                "my_side": "host",
+                "my_deck": host_deck,
+                "peer_deck": guest_deck,
+                "commands": commands,
+            })
+        if guest is not None:
+            await guest.send({
+                "type": "RESYNC_DATA",
+                "target_tick": tick,
+                "seed": seed,
+                "my_side": "guest",
+                "my_deck": guest_deck,
+                "peer_deck": host_deck,
+                "commands": commands,
+            })
 
     async def _disconnect_client(self, c: Client, reason: str = "") -> None:
         async with self._lock:

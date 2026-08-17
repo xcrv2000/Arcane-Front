@@ -1,0 +1,12 @@
+{
+  "host": "64.90.30.36",
+  "user": "root",
+  "port": 22,
+  "sshKeyPath": "~/.ssh/id_arcane_relay",
+  "remoteDir": "/opt/relay-server",
+  "remoteFile": "relay_server.py",
+  "remotePython": "python3",
+  "launchArgs": "--host 0.0.0.0 --port 8765",
+  "healthPort": 8765,
+  "logFile": "relay_server.log"
+}
