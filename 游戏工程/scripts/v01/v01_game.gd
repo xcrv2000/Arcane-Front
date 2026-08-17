@@ -1156,19 +1156,18 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 	painter.sync_error = false
 	if side_role == "":
 		# —— 非重连方（战场状态完好）——
-		# 关键：断线+3秒恢复期间，对端的命令我们都没收到（对端当时不在线）
-		# 需要为对方的未来 FILL_WINDOW 个 tick 预填 NO_OP 占位。
-		# 真实命令到达后 enqueue_command 会覆盖尚未被 consume 的同tick占位，不会 desync
+		# 对端重连/重同步成功：立即恢复战斗，不再 3 秒倒计时。
+		# 为保证命令窗口充足，先为对方预填 256 tick 的 NO_OP 占位。
 		var base_tick: int = scheduler.current_tick
-		var FILL_WINDOW: int = 128  # ~ 2.1s 缓冲，足够命令往返
+		var FILL_WINDOW: int = 256  # ~ 4.3s 缓冲，足够命令往返
 		for i in range(1, FILL_WINDOW + 1):
 			var t: int = base_tick + i
 			if not scheduler.has_side_command_for_tick(t, peer_game_side):
 				var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
 				scheduler.enqueue_command(noop_peer)
-		battle_restart_countdown = 3.0
-		scheduler.paused = true
-		online_status_text = "对方已重连，3秒后战斗恢复…"
+		battle_restart_countdown = -1.0
+		scheduler.paused = false
+		online_status_text = "对方已重连，战斗继续"
 		queue_redraw()
 	else:
 		# —— 重连方（主机或客机）：回放命令恢复战场 ——
@@ -1184,9 +1183,9 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 		# 回放所有命令恢复战场状态
 		if commands.size() > 0:
 			_replay_commands(commands)
-		# 填充双方滑动窗口的 NO_OP 占位（FILL_WINDOW ~ 2秒命令缓冲）
+		# 填充双方滑动窗口的 NO_OP 占位（FILL_WINDOW ~ 4.3s 缓冲）
 		var base_tick: int = scheduler.current_tick
-		var FILL_WINDOW: int = 128
+		var FILL_WINDOW: int = 256
 		for i in range(1, FILL_WINDOW + 1):
 			var t: int = base_tick + i
 			# 本方 NO_OP：入队 + 通过网络发给对端（真实PLAY_CARD覆盖会被对端enqueue替换）
@@ -1198,10 +1197,10 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 			if not scheduler.has_side_command_for_tick(t, peer_game_side):
 				var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
 				scheduler.enqueue_command(noop_peer)
-		# 3秒倒计时后恢复
-		battle_restart_countdown = 3.0
-		scheduler.paused = true
-		online_status_text = "战场已恢复，3秒后战斗继续…"
+		# 立即恢复战斗，不再 3 秒倒计时
+		battle_restart_countdown = -1.0
+		scheduler.paused = false
+		online_status_text = "战场已恢复，战斗继续"
 		queue_redraw()
 
 
@@ -1224,9 +1223,9 @@ func _on_resync_data(commands: Array, target_tick: int, seed_val: int, side_role
 	# 回放到服务器指定的同一 tick，确保双方从相同状态继续
 	if commands.size() > 0 or target_tick > 0:
 		_replay_commands(commands, target_tick)
-	# 填充双方滑动窗口 NO_OP，并短暂暂停后恢复
+	# 填充双方滑动窗口 NO_OP，并立即恢复战斗（不再 3 秒倒计时）
 	var base_tick: int = scheduler.current_tick
-	var FILL_WINDOW: int = 128
+	var FILL_WINDOW: int = 256
 	for i in range(1, FILL_WINDOW + 1):
 		var t: int = base_tick + i
 		var noop_self: Dictionary = Command.no_op_command(t, my_game_side)
@@ -1236,9 +1235,9 @@ func _on_resync_data(commands: Array, target_tick: int, seed_val: int, side_role
 		if not scheduler.has_side_command_for_tick(t, peer_game_side):
 			var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
 			scheduler.enqueue_command(noop_peer)
-	battle_restart_countdown = 3.0
-	scheduler.paused = true
-	online_status_text = "同步完成，3秒后战斗继续…"
+	battle_restart_countdown = -1.0
+	scheduler.paused = false
+	online_status_text = "同步完成，战斗继续"
 	queue_redraw()
 
 

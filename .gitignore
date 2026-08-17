@@ -1,2 +1,5 @@
 # 服务端部署工具本地配置（含服务器地址、密钥路径），不提交仓库
 tools/deploy_relay/deploy.config.json
+
+# 本地测试用 Godot（headless 验证入口），体积大且仅本机使用，不提交仓库
+tools/godot/
