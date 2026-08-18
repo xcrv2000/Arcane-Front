@@ -16,6 +16,7 @@ const UIPainter = preload("res://scripts/presentation/ui_painter.gd")
 const LockstepScheduler = preload("res://scripts/networking/lockstep_scheduler.gd")
 const Command = preload("res://scripts/networking/command.gd")
 const Fp = preload("res://scripts/support/fp_math.gd")
+const DesyncStats = preload("res://scripts/support/desync_stats.gd")
 const NetworkClient = preload("res://scripts/networking/network_client.gd")
 const DECK_SAVE_PATH: String = "user://selected_deck.json"
 const CARD_HOTKEYS: Array[Key] = [KEY_Q, KEY_W, KEY_E, KEY_A, KEY_S, KEY_D]
@@ -70,6 +71,8 @@ var heartbeat_timer: float = 0.0
 # —— desync 自动重同步：检测到同步错误后先尝试用服务器命令日志恢复，而不是直接结束 ——
 var desync_recovering: bool = false
 var desync_recovery_timer: float = -1.0
+# 调试统计：记录每次 desync 从“停止等待重同步”到“恢复/失败”的耗时
+var desync_stats: DesyncStats
 
 # Issue1: 对方申请了再战（RESULT界面提示）
 var peer_rematch_requested: bool = false
@@ -103,6 +106,8 @@ func _ready() -> void:
 	scheduler = LockstepScheduler.new()
 	scheduler.strict_wait = false  # 本地模式，不等待网络
 	scheduler.sides = [Config.PLAYER, Config.BOT]
+	desync_stats = DesyncStats.new()
+	print("[DesyncStats] 统计文件：%s" % ProjectSettings.globalize_path(DesyncStats.STATS_PATH))
 	_load_saved_deck()
 	selected_card_ids = saved_deck_ids.duplicate()
 	if not catalog_cards.is_empty():
@@ -196,7 +201,7 @@ func _init_networking() -> void:
 # 帧 → 累加器 → 整数 tick。每 tick 执行：
 #   1) Bot.update 产出命令 → 入队（到 execution_tick）
 #   2) 从 scheduler 取出本 tick 命令 → execute_command
-#   3) advance_time(TICK_DT) → check_mana → update_units → 法术特效 → 进化闪光 → 胜负切换
+#   3) advance_time(TICK_DT) → update_pending_casts → check_mana → update_units → 法术特效 → 进化闪光 → 胜负切换
 #   4) 若 tick 为 DESYNC_CHECK_INTERVAL 倍数：生成双方 CHECKSUM 命令并验证
 func _process(delta: float) -> void:
 	# 网络轮询：每帧直接 poll（替代 Timer 的 0.033s 延迟，确保对端命令及时接收）
@@ -317,7 +322,9 @@ func _step_one_tick() -> bool:
 		simulator.execute_command(cmd, task_system)
 
 	# 3) 推进模拟（顺序与原实现完全一致，只是 delta → TICK_DT）
+	#    前摇倒计时放在 advance_time 之后、任务/单位更新之前：到 0 的部署/法术会在本 tick 真正生效。
 	simulator.advance_time(Config.TICK_DT)
+	simulator.update_pending_casts()
 	task_system.check_mana(Config.PLAYER, simulator.player_mana())
 	task_system.check_mana(Config.BOT, simulator.bot_mana())
 	simulator.update_units(Config.TICK_DT)
@@ -1051,6 +1058,8 @@ func _on_opponent_win_by_dc(winner_side: String, _rc: String) -> void:
 	reconnect_connecting = false
 	reconnect_join_sent = false
 	reconnect_timer = -1.0
+	if desync_stats != null:
+		desync_stats.cancel_active()
 	var i_won: bool = (winner_side == my_side)
 	simulator.running = false
 	painter.override_winner = my_game_side if i_won else peer_game_side
@@ -1068,6 +1077,9 @@ func _on_start_match(seed: int, _side_role: String, my_deck: Array[String], peer
 	scheduler.sides = [Config.PLAYER, Config.BOT]  # 固定顺序，确保双方命令执行顺序一致
 	# 用服务器共享种子初始化 rng
 	simulator.set_shared_seed(seed)
+	# 新对局开始前丢弃任何未结束的 desync 计时（正常流程中通常已由离开/再战清理）
+	if desync_stats != null:
+		desync_stats.cancel_active()
 	# 启动对局
 	_start_online_battle(my_deck, peer_deck)
 
@@ -1078,6 +1090,8 @@ func _on_peer_command(_cmd_dict: Dictionary) -> void:
 
 
 func _on_result_received(winner_side: String, _rc: String) -> void:
+	if desync_stats != null:
+		desync_stats.end_desync("failed" if winner_side == "sync_error" else "aborted")
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
 	reconnecting_locally = false
@@ -1168,9 +1182,11 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 		battle_restart_countdown = -1.0
 		scheduler.paused = false
 		online_status_text = "对方已重连，战斗继续"
+		if desync_stats != null and desync_stats.is_active():
+			desync_stats.end_desync("recovered")
 		queue_redraw()
 	else:
-		# —— 重连方（主机或客机）：回放命令恢复战场 ——
+		# —— 重连方（主机或客机）：优先保留本机未丢失的战场状态，只回放断线期间错过的尾部命令 ——
 		my_side = side_role
 		_online_setup_sides()
 		peer_deck_ids = peer_deck.duplicate()
@@ -1178,11 +1194,26 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 		scheduler.strict_wait = true
 		scheduler.sides = [Config.PLAYER, Config.BOT]
 		simulator.set_shared_seed(seed_val)
-		# 初始化战斗（会 reset scheduler、start_battle 等）
-		_start_online_battle(my_deck, peer_deck)
-		# 回放所有命令恢复战场状态
-		if commands.size() > 0:
-			_replay_commands(commands)
+		var can_resume_local: bool = scheduler.current_tick > 0
+		if can_resume_local:
+			# 本机状态仍有效：不清空模拟，直接补齐断线期间缺失的尾部命令。
+			# 保留 pending_commands，避免丢弃断线前已入队但可能尚未送达服务器的真实命令。
+			scheduler.desynced = false
+			scheduler.desync_info = {}
+			scheduler.paused = false
+			scheduler.received_checksums.clear()
+			if commands.size() > 0:
+				_replay_commands(commands, 0, scheduler.current_tick)
+		else:
+			# 本机状态不可用：回退到从第 1 tick 全量回放（旧逻辑）
+			_start_online_battle(my_deck, peer_deck)
+			if commands.size() > 0:
+				_replay_commands(commands)
+		# 同步本机 UI 阵营/卡组（与 _start_online_battle 尾部保持一致）
+		painter.controlled_side = my_game_side
+		selected_card_ids = my_deck.duplicate()
+		selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""
+		painter.info_card_id = selected_battle_card_id
 		# 填充双方滑动窗口的 NO_OP 占位（FILL_WINDOW ~ 4.3s 缓冲）
 		var base_tick: int = scheduler.current_tick
 		var FILL_WINDOW: int = 256
@@ -1201,11 +1232,13 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 		battle_restart_countdown = -1.0
 		scheduler.paused = false
 		online_status_text = "战场已恢复，战斗继续"
+		if desync_stats != null and desync_stats.is_active():
+			desync_stats.end_desync("recovered")
 		queue_redraw()
 
 
 # —— desync 自动重同步：服务器返回命令日志后，双方重置并按同一 tick 回放恢复 ——
-func _on_resync_data(commands: Array, target_tick: int, seed_val: int, side_role: String, my_deck: Array[String], peer_deck: Array[String]) -> void:
+func _on_resync_data(commands: Array, target_tick: int, base_tick: int, seed_val: int, side_role: String, my_deck: Array[String], peer_deck: Array[String]) -> void:
 	desync_recovering = false
 	desync_recovery_timer = -1.0
 	disconnect_countdown = -1.0
@@ -1219,15 +1252,23 @@ func _on_resync_data(commands: Array, target_tick: int, seed_val: int, side_role
 	scheduler.strict_wait = true
 	scheduler.sides = [Config.PLAYER, Config.BOT]
 	simulator.set_shared_seed(seed_val)
+	# 必须在 _start_online_battle（会 reset scheduler）之前取检查点，否则检查点会被清空。
+	var snap: Variant = scheduler.get_recovery_snapshot(base_tick) if base_tick >= 0 else null
 	_start_online_battle(my_deck, peer_deck)
-	# 回放到服务器指定的同一 tick，确保双方从相同状态继续
-	if commands.size() > 0 or target_tick > 0:
-		_replay_commands(commands, target_tick)
+	# 优先从双方共有的检查点恢复，只重放检查点之后的尾部命令，避免整局全量重放。
+	var recovered_from_snapshot: bool = false
+	if snap != null:
+		_recover_from_snapshot(base_tick, snap, commands, target_tick)
+		recovered_from_snapshot = true
+	if not recovered_from_snapshot:
+		# 没有可用检查点：回退到从第 1 tick 全量重放（旧逻辑，仍保证可恢复）。
+		if commands.size() > 0 or target_tick > 0:
+			_replay_commands(commands, target_tick)
 	# 填充双方滑动窗口 NO_OP，并立即恢复战斗（不再 3 秒倒计时）
-	var base_tick: int = scheduler.current_tick
+	var fill_base_tick: int = scheduler.current_tick
 	var FILL_WINDOW: int = 256
 	for i in range(1, FILL_WINDOW + 1):
-		var t: int = base_tick + i
+		var t: int = fill_base_tick + i
 		var noop_self: Dictionary = Command.no_op_command(t, my_game_side)
 		scheduler.enqueue_command(noop_self)
 		if i <= Config.INPUT_DELAY_TICKS:
@@ -1238,11 +1279,14 @@ func _on_resync_data(commands: Array, target_tick: int, seed_val: int, side_role
 	battle_restart_countdown = -1.0
 	scheduler.paused = false
 	online_status_text = "同步完成，战斗继续"
+	if desync_stats != null:
+		desync_stats.end_desync("recovered")
 	queue_redraw()
 
 
-# 命令回放：按 tick 顺序执行所有命令并推进模拟，恢复到断线/重同步前的战场状态
-func _replay_commands(commands: Array, end_tick: int = 0) -> void:
+# 命令回放：按 tick 顺序执行所有命令并推进模拟，恢复到断线/重同步前的战场状态。
+# from_tick > 0 时，假定调用方已把状态恢复到 from_tick，只回放 from_tick+1..end_tick。
+func _replay_commands(commands: Array, end_tick: int = 0, from_tick: int = 0) -> void:
 	# 按 tick 分组
 	var cmds_by_tick: Dictionary = {}
 	var max_tick: int = 0
@@ -1253,25 +1297,48 @@ func _replay_commands(commands: Array, end_tick: int = 0) -> void:
 		var tick: int = int(cmd.get("tick", 0))
 		if tick > max_tick:
 			max_tick = tick
+		if tick <= from_tick:
+			continue  # 只关心恢复点之后的命令
 		if not cmds_by_tick.has(tick):
 			cmds_by_tick[tick] = []
 		cmds_by_tick[tick].append(cmd)
-	var replay_to: int = max_tick if end_tick <= 0 else min(max_tick, end_tick)
+	var replay_to: int = end_tick if end_tick > 0 else max_tick
+	var start_tick: int = max(1, from_tick + 1)
 	# 逐 tick 回放
-	for tick in range(1, replay_to + 1):
+	for tick in range(start_tick, replay_to + 1):
 		var tick_cmds: Array = cmds_by_tick.get(tick, [])
+		scheduler.set_consumed_commands(tick, tick_cmds)
 		for cmd in tick_cmds:
 			simulator.execute_command(cmd, task_system)
 		simulator.advance_time(Config.TICK_DT)
+		simulator.update_pending_casts()
 		task_system.check_mana(Config.PLAYER, simulator.player_mana())
 		task_system.check_mana(Config.BOT, simulator.bot_mana())
 		simulator.update_units(Config.TICK_DT)
 		simulator.update_spell_effects(Config.TICK_DT)
 		simulator.update_evolution_flashes(Config.TICK_DT)
 		scheduler.current_tick = tick
+		# 回放过程中也保存快照/检查点，保证恢复后的快照链连续，避免下一次回滚/重同步无快照可用。
+		if online_mode:
+			scheduler.save_state_snapshot(tick, simulator.snapshot(), task_system.snapshot())
 	# 网络轮询（回放期间防止TCP超时）
 	if net != null and net.is_attached():
 		net.poll()
+
+
+# 从指定检查点恢复，并只回放该检查点之后的命令。
+func _recover_from_snapshot(base_tick: int, snap: Variant, commands: Array, target_tick: int) -> void:
+	var snap_dict: Dictionary = snap
+	simulator.restore(snap_dict["sim"])
+	task_system.restore(snap_dict["task"])
+	scheduler.current_tick = base_tick
+	# 清掉 _start_online_battle 预发的旧 NO_OP 队列，稍后由恢复流程重新填充窗口。
+	scheduler.pending_commands.clear()
+	scheduler.received_checksums.clear()
+	# 把检查点也写回逐 tick 快照链，方便后续短窗口回滚使用。
+	scheduler.save_state_snapshot(base_tick, snap_dict["sim"], snap_dict["task"])
+	if commands.size() > 0 or target_tick > 0:
+		_replay_commands(commands, target_tick, base_tick)
 
 
 # Issue2: 客机退出后，房主点"回到房间"回到 ROOM_WAIT 等待新客机
@@ -1288,6 +1355,8 @@ func _back_to_room_wait() -> void:
 	reconnect_timer = -1.0
 	desync_recovering = false
 	desync_recovery_timer = -1.0
+	if desync_stats != null:
+		desync_stats.cancel_active()
 	painter.override_winner = ""
 	painter.network_disconnect = false
 	painter.sync_error = false
@@ -1405,6 +1474,8 @@ func _request_online_rematch() -> void:
 	reconnect_timer = -1.0
 	desync_recovering = false
 	desync_recovery_timer = -1.0
+	if desync_stats != null:
+		desync_stats.cancel_active()
 	peer_rematch_requested = false
 	# 重置准备状态
 	my_ready = false
@@ -1440,6 +1511,8 @@ func _leave_room() -> void:
 	reconnect_timer = -1.0
 	desync_recovering = false
 	desync_recovery_timer = -1.0
+	if desync_stats != null:
+		desync_stats.cancel_active()
 	peer_rematch_requested = false
 	peer_left_reason = ""
 	painter.sync_error = false
@@ -1541,14 +1614,21 @@ func _start_desync_recovery(info: Dictionary) -> void:
 	scheduler.paused = true
 	scheduler.paused_reason = "检测到同步错误，正在重新同步"
 	online_status_text = "检测到同步错误，正在重新同步…"
+	if desync_stats != null:
+		desync_stats.start_desync(scheduler.current_tick, room_code, info)
 	if net != null:
-		net.send_resync(scheduler.current_tick)
+		# 使用 desync 发生 tick 之前一个校验间隔的检查点作为恢复基点，避免从第 1 tick 全量重放。
+		var safe_base_tick: int = int(info.get("tick", 0)) - Config.DESYNC_CHECK_INTERVAL
+		var base_tick: int = max(0, scheduler.get_recovery_base_tick(safe_base_tick))
+		net.send_resync(scheduler.current_tick, base_tick)
 	queue_redraw()
 
 
 func _enter_sync_error_result() -> void:
 	desync_recovering = false
 	desync_recovery_timer = -1.0
+	if desync_stats != null:
+		desync_stats.end_desync("failed")
 	scheduler.desynced = true
 	scheduler.desync_info = {}
 	simulator.running = false
@@ -1600,30 +1680,42 @@ func _perform_rollback() -> void:
 		return
 
 	var snap: Variant = scheduler.get_state_snapshot(rb_tick - 1)
+	var rollback_base: int = rb_tick - 1
 	if snap == null:
-		simulator.push_event("弱网：迟到命令 T%d 无法回滚（无快照，已超出 2 秒窗口）" % rb_tick)
+		# 精确快照已超出 2 秒窗口：回退到最近的周期性检查点，再重放已消费命令尾部。
+		var cp_tick: int = scheduler.get_recovery_base_tick(rb_tick - 1)
+		if cp_tick >= 0:
+			snap = scheduler.get_recovery_snapshot(cp_tick)
+			rollback_base = cp_tick
+		else:
+			snap = scheduler.get_recovery_snapshot(rb_tick - 1)
+			rollback_base = rb_tick - 1
+	if snap == null:
+		simulator.push_event("弱网：迟到命令 T%d 无法回滚（无快照/检查点，已超出保留窗口）" % rb_tick)
 		return
 
 	var replay_to: int = scheduler.current_tick
-	simulator.push_event("弱网：迟到命令 %d 条（最早 T%d），回滚重放 T%d→T%d" % [rb_cmds.size(), rb_tick, rb_tick, replay_to])
+	simulator.push_event("弱网：迟到命令 %d 条（最早 T%d），从检查点 T%d 回滚重放 T%d→T%d" % [rb_cmds.size(), rb_tick, rollback_base, rollback_base + 1, replay_to])
 
-	# 1. 恢复模拟器+任务系统状态到 rb_tick-1（即 rb_tick 执行前）
+	# 1. 恢复模拟器+任务系统状态到 rollback_base（即最早可用的检查点/快照）
 	var snap_dict: Dictionary = snap
 	simulator.restore(snap_dict["sim"])
 	task_system.restore(snap_dict["task"])
+	scheduler.current_tick = rollback_base
+	scheduler.save_state_snapshot(rollback_base, snap_dict["sim"], snap_dict["task"])
 
 	# 2. 替换已消费命令记录（将 NO_OP/旧 PLAY_CARD 替换为所有迟到的真实 play_card）
 	for rc in rb_cmds:
 		if typeof(rc) == TYPE_DICTIONARY:
 			scheduler.replace_consumed_command(int(rc.get("tick", 0)), rc)
 
-	# 3. 从 rb_tick 逐 tick 重放到 current_tick（使用修正后的命令）
-	scheduler.current_tick = rb_tick - 1
-	for t in range(rb_tick, replay_to + 1):
+	# 3. 从 rollback_base+1 逐 tick 重放到 current_tick（使用修正后的命令）
+	for t in range(rollback_base + 1, replay_to + 1):
 		var cmds: Array = scheduler.get_consumed_commands(t)
 		for cmd in cmds:
 			simulator.execute_command(cmd, task_system)
 		simulator.advance_time(Config.TICK_DT)
+		simulator.update_pending_casts()
 		task_system.check_mana(Config.PLAYER, simulator.player_mana())
 		task_system.check_mana(Config.BOT, simulator.bot_mana())
 		simulator.update_units(Config.TICK_DT)
@@ -1636,12 +1728,12 @@ func _perform_rollback() -> void:
 	# 4. 清除回滚期间的 desync 标志和过期 checksum（状态已修正）
 	scheduler.desynced = false
 	scheduler.desync_info = {}
-	for t in range(rb_tick, replay_to + 1):
+	for t in range(rollback_base + 1, replay_to + 1):
 		scheduler.received_checksums.erase(t)
 
 	# 4.5 重新发送回滚范围内所有校验点的修正后 CHECKSUM，覆盖对端可能收到的旧值
 	if online_mode:
-		for t in range(rb_tick, replay_to + 1):
+		for t in range(rollback_base + 1, replay_to + 1):
 			if t > 0 and t % Config.DESYNC_CHECK_INTERVAL == 0:
 				var cs_corrected: int = simulator.state_checksum()
 				var cs_cmd: Dictionary = Command.checksum_command(t, my_game_side, cs_corrected)
@@ -1700,6 +1792,8 @@ func _enter_network_disconnect_result() -> void:
 	reconnect_timer = -1.0
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
+	if desync_stats != null:
+		desync_stats.cancel_active()
 	simulator.running = false
 	painter.override_winner = ""
 	painter.network_disconnect = true

@@ -440,6 +440,8 @@ func _draw_map(canvas: CanvasItem) -> void:
 	for effect in simulator.spell_effects:
 		if String(effect.get("mode", "")) != "attack":
 			_draw_spell_effect(canvas, effect)
+	for cast in simulator.pending_casts:
+		_draw_pending_cast(canvas, cast)
 	for unit in simulator.units:
 		_draw_unit(canvas, unit)
 	for effect in simulator.spell_effects:
@@ -559,6 +561,35 @@ func _draw_spell_projectile(canvas: CanvasItem, effect: Dictionary) -> void:
 	canvas.draw_circle(head, 5.0, color)
 	canvas.draw_circle(head, 5.0, Color(1.0, 0.97, 0.82), false, 1.5)
 	helpers.draw_text_line(canvas, String(effect.get("label", "")), Rect2(head - Vector2(18.0, 22.0), Vector2(36.0, 16.0)), 12, Color(1.0, 0.97, 0.86), HORIZONTAL_ALIGNMENT_CENTER)
+
+
+# 部署/法术前摇圈：只画一个目标位置圈，用阵营色区分敌我。
+# 圈内填充随前摇进度增强，让玩家看到“即将生效”的落点。
+func _draw_pending_cast(canvas: CanvasItem, cast: Dictionary) -> void:
+	var F: float = preload("res://scripts/config/game_config.gd").FP_SCALE_F
+	var target_fp: Dictionary = cast.get("target_fp", {})
+	var target_logic: Vector2 = Vector2(
+		float(int(target_fp.get("x", 0))) / F,
+		float(int(target_fp.get("y", 0))) / F
+	)
+	var center: Vector2 = map_to_screen(target_logic)
+	var card: Dictionary = cast.get("card", {})
+	var radius_logic: float = float(card.get("radius", 1.5))
+	if String(card.get("kind", "")) == "unit":
+		radius_logic = max(1.0, radius_logic * Config.UNIT_RADIUS_SCALE)
+	else:
+		radius_logic = max(1.0, radius_logic)
+	var radius: float = logic_to_pixels(radius_logic)
+	var total: int = max(1, int(cast.get("total_ticks", 1)))
+	var remaining: int = clamp(int(cast.get("remaining_ticks", 0)), 0, total)
+	var progress: float = clamp(1.0 - float(remaining) / float(total), 0.0, 1.0)
+	var side: String = String(cast.get("side", ""))
+	var color: Color = Color(0.35, 0.78, 1.0) if side == controlled_side else Color(1.0, 0.42, 0.30)
+	color.a = 0.18 + 0.55 * progress
+	canvas.draw_circle(center, radius, Color(color.r, color.g, color.b, 0.12 + 0.10 * progress))
+	canvas.draw_circle(center, radius, color, false, 2.0)
+	# 再画一个更小的内圈作为“即将落点”的提示（仍只是圈，不做进度条文字）。
+	canvas.draw_circle(center, max(3.0, radius * 0.22), Color(color.r, color.g, color.b, 0.35 + 0.55 * progress), false, 1.5)
 
 
 func _draw_unit_death_trigger_range(canvas: CanvasItem, unit: Dictionary) -> void:

@@ -23,6 +23,10 @@ var bot_mana_fp: int = 0
 var units: Array[Dictionary] = []
 var spell_effects: Array[Dictionary] = []
 var persistent_effects: Array[Dictionary] = []
+# —— 部署/法术前摇（V0.5 弱网增强）——
+# 命令执行后不会立刻生成/结算，而是先进入这个队列，等待 CAST_WINDUP_TICKS 个 tick。
+# 该状态参与锁步 checksum 与快照回滚，因此 desync/重连恢复时也能保证双方在同一时刻完成前摇。
+var pending_casts: Array[Dictionary] = []
 var bases: Dictionary = {}
 var stats: Dictionary = {}
 var event_log: Array[String] = []
@@ -113,6 +117,7 @@ func start_battle() -> void:
 	units.clear()
 	spell_effects.clear()
 	persistent_effects.clear()
+	pending_casts.clear()
 	event_log.clear()
 	match_winner = ""
 	running = true
@@ -242,12 +247,72 @@ func try_play_card_fp(side: String, card: Dictionary, target_fp: Dictionary) -> 
 		card_cooldowns[side] = side_cooldowns
 
 	if card["kind"] == "unit":
+		if Config.CAST_WINDUP_TICKS > 0:
+			_queue_pending_cast(side, card, target_fp)
+		else:
+			_spawn_units(side, card, target_fp)
+	else:
+		if Config.CAST_WINDUP_TICKS > 0:
+			_queue_pending_cast(side, card, target_fp)
+		else:
+			_cast_spell(side, card, target_fp)
+
+	_record_card_use(side, card_id)
+	return true
+
+
+# —— 部署/法术前摇（V0.5 弱网增强）——
+# 把已经通过费用/冷却/落点校验的卡牌放入前摇队列；费用与冷却在入队时立即生效，
+# 实际生成单位/结算法术要等 CAST_WINDUP_TICKS 个 tick 后由 update_pending_casts 完成。
+func _queue_pending_cast(side: String, card: Dictionary, target_fp: Dictionary) -> void:
+	pending_casts.append({
+		"side": side,
+		"card": card.duplicate(true),
+		"target_fp": target_fp.duplicate(true),
+		"remaining_ticks": Config.CAST_WINDUP_TICKS,
+		"total_ticks": Config.CAST_WINDUP_TICKS,
+	})
+	push_event("%s 开始%s%s，%.2f 秒后生效。" % [
+		MapMath.side_name(side),
+		"部署 " if String(card.get("kind", "")) == "unit" else "施放 ",
+		card.get("name", card.get("id", "?")),
+		float(Config.CAST_WINDUP_TICKS) / float(Config.TICK_RATE)
+	])
+
+
+# 每 tick 推进前摇倒计时；到 0 时执行真正的生成/法术结算。
+func update_pending_casts() -> void:
+	if pending_casts.is_empty():
+		return
+	var remaining_list: Array[Dictionary] = []
+	for cast in pending_casts:
+		var remaining: int = int(cast.get("remaining_ticks", 0)) - 1
+		if remaining <= 0:
+			_finish_pending_cast(cast)
+		else:
+			cast["remaining_ticks"] = remaining
+			remaining_list.append(cast)
+	pending_casts = remaining_list
+
+
+func _finish_pending_cast(cast: Dictionary) -> void:
+	var side: String = String(cast.get("side", ""))
+	var card: Dictionary = cast.get("card", {})
+	var target_fp: Dictionary = cast.get("target_fp", {"x": 0, "y": 0})
+	if card.is_empty():
+		return
+	if String(card.get("kind", "")) == "unit":
 		_spawn_units(side, card, target_fp)
 	else:
 		_cast_spell(side, card, target_fp)
 
-	_record_card_use(side, card_id)
-	return true
+
+# 查询某张卡当前是否有进行中的前摇（供 UI 显示；无则返回空字典）。
+func pending_cast_for_card(side: String, card_id: String) -> Dictionary:
+	for cast in pending_casts:
+		if String(cast.get("side", "")) == side and String(cast.get("card", {}).get("id", "")) == card_id:
+			return cast
+	return {}
 
 
 # —— 出牌统一入口（float 兼容版，供调试/旧调用方使用）——
@@ -1442,6 +1507,20 @@ func state_checksum() -> int:
 		h = _fnv_mix(h, int(effect.get("mana_refunded_fp", 0)), FNV_PRIME)
 		h = _fnv_mix(h, 1 if bool(effect.get("include_enemy_deaths", false)) else 0, FNV_PRIME)
 
+	# 前摇中的部署/法术也必须参与校验：desync 时若前摇状态不一致，要在实际生效前被发现并重同步。
+	h = _fnv_mix(h, pending_casts.size(), FNV_PRIME)
+	for cast in pending_casts:
+		var cast_card: Dictionary = cast.get("card", {})
+		h = _fnv_mix(h, String(cast.get("side", "")).hash(), FNV_PRIME)
+		h = _fnv_mix(h, String(cast_card.get("id", "")).hash(), FNV_PRIME)
+		h = _fnv_mix(h, String(cast_card.get("evolved_id", "")).hash(), FNV_PRIME)
+		h = _fnv_mix(h, String(cast_card.get("kind", "")).hash(), FNV_PRIME)
+		h = _fnv_mix(h, String(cast_card.get("spell_mode", "")).hash(), FNV_PRIME)
+		h = _fnv_mix(h, int(cast.get("remaining_ticks", 0)), FNV_PRIME)
+		h = _fnv_mix(h, int(cast.get("total_ticks", 0)), FNV_PRIME)
+		h = _fnv_mix(h, int(cast.get("target_fp", {}).get("x", 0)), FNV_PRIME)
+		h = _fnv_mix(h, int(cast.get("target_fp", {}).get("y", 0)), FNV_PRIME)
+
 	# 任务进度会改变后续卡牌定义，因此也必须参与锁步校验。
 	if task_system != null:
 		for side in [Config.PLAYER, Config.BOT]:
@@ -1475,6 +1554,7 @@ func snapshot() -> Dictionary:
 		"units": units.duplicate(true),
 		"spell_effects": spell_effects.duplicate(true),
 		"persistent_effects": persistent_effects.duplicate(true),
+		"pending_casts": pending_casts.duplicate(true),
 		"bases": bases.duplicate(true),
 		"stats": stats.duplicate(true),
 		"event_log": event_log.duplicate(true),
@@ -1497,6 +1577,7 @@ func restore(snap: Dictionary) -> void:
 	units = snap["units"].duplicate(true)
 	spell_effects = snap["spell_effects"].duplicate(true)
 	persistent_effects = snap["persistent_effects"].duplicate(true)
+	pending_casts = snap.get("pending_casts", []).duplicate(true)
 	bases = snap["bases"].duplicate(true)
 	stats = snap["stats"].duplicate(true)
 	event_log = snap["event_log"].duplicate(true)

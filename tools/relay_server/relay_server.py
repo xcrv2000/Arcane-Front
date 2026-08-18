@@ -135,8 +135,9 @@ class Room:
         self.guest_client_id: str = ""
         # 断线超时任务引用（重连时可取消）
         self.disconnect_task: Optional[asyncio.Task] = None
-        # desync 重同步：记录请求的目标 tick，并防止重复广播
+        # desync 重同步：记录请求的目标 tick 与双方都能恢复的 base_tick，并防止重复广播
         self.resync_tick: Optional[int] = None
+        self.resync_base_tick: Optional[int] = None
         self.resync_pending: bool = False
         # 命令日志：存储本局所有命令，供断线重连/desync 重同步回放恢复战场状态
         self.command_log: List[dict] = []
@@ -255,6 +256,25 @@ class RelayServer:
             saved_guest_deck = list(room.guest_deck)
             saved_commands = list(room.command_log)
             saved_seed = room.seed
+            # 断线重连只回放“双方都已发出命令”的安全 tick，避免把某一方预发的未来 NO_OP 当成已执行命令。
+            resume_commands = list(saved_commands)
+            resume_target_tick = 0
+            if was_started and saved_commands:
+                side_ticks = {"player": set(), "bot": set()}
+                for cmd in saved_commands:
+                    if not isinstance(cmd, dict):
+                        continue
+                    s = str(cmd.get("side", ""))
+                    t = int(cmd.get("tick", 0))
+                    if s in side_ticks and t > 0:
+                        side_ticks[s].add(t)
+                common_ticks = side_ticks["player"] & side_ticks["bot"]
+                if common_ticks:
+                    resume_target_tick = max(common_ticks)
+                    resume_commands = [
+                        cmd for cmd in saved_commands
+                        if isinstance(cmd, dict) and int(cmd.get("tick", 0)) <= resume_target_tick
+                    ]
             # 对端（仍在连接中的一方）
             peer = room.guest if joining_side == "host" else room.host
         if was_started and peer is not None:
@@ -268,7 +288,8 @@ class RelayServer:
                     "my_side": "host",
                     "my_deck": saved_host_deck,
                     "peer_deck": saved_guest_deck,
-                    "commands": saved_commands,
+                    "target_tick": resume_target_tick,
+                    "commands": resume_commands,
                 }
                 await c.send(resume_pkt_host)
                 await peer.send({"type": "RESUME_BATTLE"})
@@ -280,7 +301,8 @@ class RelayServer:
                     "my_side": "guest",
                     "my_deck": saved_guest_deck,
                     "peer_deck": saved_host_deck,
-                    "commands": saved_commands,
+                    "target_tick": resume_target_tick,
+                    "commands": resume_commands,
                 }
                 await c.send(resume_pkt_guest)
                 await peer.send({"type": "RESUME_BATTLE"})
@@ -311,6 +333,7 @@ class RelayServer:
         if room.all_ready() and not room.started:
             room.started = True
             room.resync_tick = None
+            room.resync_base_tick = None
             room.resync_pending = False
             # 清空命令日志（新对局开始）
             room.command_log.clear()
@@ -548,6 +571,7 @@ class RelayServer:
         # 双方回到 ROOM_WAIT 重新点准备后，服务器能再次下发 START
         room.started = False
         room.resync_tick = None
+        room.resync_base_tick = None
         room.resync_pending = False
         room.command_log.clear()
         room.command_log_index.clear()
@@ -564,16 +588,21 @@ class RelayServer:
         if not room or not room.started:
             return
         tick = max(1, int(msg.get("tick", 0)))
+        base_tick = max(0, int(msg.get("base_tick", 0)))
         should_launch = False
         async with self._lock:
             if room.resync_tick is None or tick < room.resync_tick:
                 room.resync_tick = tick
+            # base_tick 取更小（更老、更安全）的值：双方都必须有该检查点快照
+            if room.resync_base_tick is None or base_tick < room.resync_base_tick:
+                room.resync_base_tick = base_tick
             if not room.resync_pending:
                 room.resync_pending = True
                 should_launch = True
         if should_launch:
-            # 稍等片刻，尽量收集双方各自报告的 tick，取较小值作为共同恢复点
-            asyncio.create_task(self._broadcast_resync_after(room, 0.3))
+            # 稍等片刻，尽量收集双方各自报告的 tick，取较小值作为共同恢复点；
+            # 双方检测 desync 的时间接近，0.15s 已足够收集，尽量缩短恢复耗时。
+            asyncio.create_task(self._broadcast_resync_after(room, 0.15))
 
     async def _broadcast_resync_after(self, room: Room, delay: float) -> None:
         await asyncio.sleep(delay)
@@ -584,11 +613,15 @@ class RelayServer:
                 room.resync_pending = False
                 return
             tick = room.resync_tick
+            base_tick = room.resync_base_tick or 0
             room.resync_tick = None
+            room.resync_base_tick = None
             room.resync_pending = False
             commands = [
                 cmd for cmd in room.command_log
-                if isinstance(cmd, dict) and int(cmd.get("tick", 0)) <= tick
+                if isinstance(cmd, dict)
+                and int(cmd.get("tick", 0)) <= tick
+                and int(cmd.get("tick", 0)) > base_tick
             ]
             seed = room.seed
             host_deck = list(room.host_deck)
@@ -599,6 +632,7 @@ class RelayServer:
             await host.send({
                 "type": "RESYNC_DATA",
                 "target_tick": tick,
+                "base_tick": base_tick,
                 "seed": seed,
                 "my_side": "host",
                 "my_deck": host_deck,
@@ -609,6 +643,7 @@ class RelayServer:
             await guest.send({
                 "type": "RESYNC_DATA",
                 "target_tick": tick,
+                "base_tick": base_tick,
                 "seed": seed,
                 "my_side": "guest",
                 "my_deck": guest_deck,

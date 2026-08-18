@@ -45,7 +45,7 @@ signal result_received(winner: String, room_code: String)
 signal peer_rematch_received()
 signal peer_left_received(who: String)
 signal resume_battle_received(commands: Array, seed: int, my_side: String, my_deck: Array[String], peer_deck: Array[String])
-signal resync_data_received(commands: Array, target_tick: int, seed: int, my_side: String, my_deck: Array[String], peer_deck: Array[String])
+signal resync_data_received(commands: Array, target_tick: int, base_tick: int, seed: int, my_side: String, my_deck: Array[String], peer_deck: Array[String])
 signal server_error(message: String)
 
 # 配置
@@ -174,8 +174,8 @@ func send_leave_room() -> void:
 	_send_json({"type": "LEAVE_ROOM"})
 
 
-func send_resync(target_tick: int) -> void:
-	_send_json({"type": "RESYNC", "tick": target_tick})
+func send_resync(target_tick: int, base_tick: int = 0) -> void:
+	_send_json({"type": "RESYNC", "tick": target_tick, "base_tick": base_tick})
 
 
 # —— V0.5 内部：把一条命令追加到历史环形缓冲 ——
@@ -328,7 +328,7 @@ func _handle_line(text: String) -> void:
 			var rdeck_b: Array[String] = []
 			for raw in msg.get("peer_deck", []):
 				rdeck_b.append(String(raw))
-			emit_signal("resync_data_received", rcmds, int(msg.get("target_tick", 0)), int(msg.get("seed", 0)), String(msg.get("my_side", "")), rdeck_a, rdeck_b)
+			emit_signal("resync_data_received", rcmds, int(msg.get("target_tick", 0)), int(msg.get("base_tick", 0)), int(msg.get("seed", 0)), String(msg.get("my_side", "")), rdeck_a, rdeck_b)
 		"ERROR":
 			emit_signal("server_error", String(msg.get("message", "")))
 

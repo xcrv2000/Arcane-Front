@@ -61,6 +61,10 @@ var _state_snapshots: Dictionary = {}
 # tick → Array[Dictionary]：该 tick 实际执行的命令列表（用于回滚后重放）
 var _consumed_commands: Dictionary = {}
 const SNAPSHOT_BUFFER_SIZE: int = 120  # 保留最近 2 秒的快照（60Hz × 2s）
+
+# —— 快速重同步检查点：每隔一段时间保存完整状态，desync 时从最近检查点尾部重放 ——
+# tick → {"sim": Dictionary, "task": Dictionary}
+var _checkpoint_snapshots: Dictionary = {}
 # 回滚信号：当 enqueue_command_batch 发现迟到的真实命令时设置
 var rollback_pending: bool = false
 var rollback_tick: int = -1
@@ -432,6 +436,7 @@ func reset() -> void:
 	current_input_delay_ticks = Config.INPUT_DELAY_TICKS
 	# V0.5 回滚状态重置
 	_state_snapshots.clear()
+	_checkpoint_snapshots.clear()
 	_consumed_commands.clear()
 	rollback_pending = false
 	rollback_tick = -1
@@ -449,12 +454,45 @@ func save_state_snapshot(tick: int, sim_snap: Dictionary, task_snap: Dictionary)
 	while _state_snapshots.size() > SNAPSHOT_BUFFER_SIZE:
 		var oldest: int = _state_snapshots.keys().min()
 		_state_snapshots.erase(oldest)
-		_consumed_commands.erase(oldest)
+	# 已消费命令保留更久，供检查点回滚使用（与检查点保留窗口一致）
+	while _consumed_commands.size() > Config.RECOVERY_CHECKPOINT_RETENTION_TICKS:
+		var oldest_cmd: int = _consumed_commands.keys().min()
+		_consumed_commands.erase(oldest_cmd)
+	# 周期性检查点：供 desync 快速重同步使用
+	if tick > 0 and tick % Config.RECOVERY_CHECKPOINT_INTERVAL_TICKS == 0:
+		_checkpoint_snapshots[tick] = {"sim": sim_snap, "task": task_snap}
+		while _checkpoint_snapshots.size() > 0:
+			var oldest_cp: int = _checkpoint_snapshots.keys().min()
+			if tick - oldest_cp <= Config.RECOVERY_CHECKPOINT_RETENTION_TICKS:
+				break
+			_checkpoint_snapshots.erase(oldest_cp)
 
 
 # 获取某 tick 的状态快照（用于回滚恢复）
 func get_state_snapshot(tick: int) -> Variant:
 	return _state_snapshots.get(tick, null)
+
+
+# 获取不晚于指定 tick 的最近检查点快照；没有检查点则回退到精确每 tick 快照。
+func get_recovery_snapshot(at_or_before_tick: int) -> Variant:
+	var best_tick: int = -1
+	for raw_t in _checkpoint_snapshots.keys():
+		var t: int = int(raw_t)
+		if t <= at_or_before_tick and t > best_tick:
+			best_tick = t
+	if best_tick >= 0:
+		return _checkpoint_snapshots[best_tick]
+	return _state_snapshots.get(at_or_before_tick, null)
+
+
+# 获取不晚于指定 tick 的最近检查点 tick；没有则返回 -1。
+func get_recovery_base_tick(at_or_before_tick: int) -> int:
+	var best_tick: int = -1
+	for raw_t in _checkpoint_snapshots.keys():
+		var t: int = int(raw_t)
+		if t <= at_or_before_tick and t > best_tick:
+			best_tick = t
+	return best_tick
 
 
 # 替换已消费命令记录中某 tick/side 的命令（NO_OP → 迟到的 play_card）
@@ -472,6 +510,11 @@ func replace_consumed_command(tick: int, new_cmd: Dictionary) -> void:
 # 获取某 tick 已消费的命令列表（用于回滚重放）
 func get_consumed_commands(tick: int) -> Array:
 	return _consumed_commands.get(tick, [])
+
+
+# 写入某 tick 已消费的命令列表（回放/恢复时用于重建回滚日志）
+func set_consumed_commands(tick: int, cmds: Array) -> void:
+	_consumed_commands[tick] = cmds.duplicate(true)
 
 
 # 清除回滚信号（控制器处理完毕后调用）
