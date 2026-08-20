@@ -211,7 +211,7 @@ func _process(delta: float) -> void:
 	if net != null and net.is_tcp_connected() and (online_mode or room_code != ""):
 		heartbeat_timer -= delta
 		if heartbeat_timer <= 0.0:
-			heartbeat_timer = 2.0
+			heartbeat_timer = Config.ENET_HEARTBEAT_INTERVAL
 			net.send_heartbeat()
 	# 本机断线重连：定时发起重连、等待连接建立后补发 JOIN_ROOM
 	if reconnecting_locally:
@@ -241,14 +241,7 @@ func _process(delta: float) -> void:
 		if battle_restart_countdown <= 0.0:
 			battle_restart_countdown = -1.0
 			resume_now = true
-			# —— 倒计时结束：扩展对方NO_OP窗口到 256 tick，避免刚恢复就因为网络抖动缺命令暂停
-			var extra_base: int = scheduler.current_tick
-			for i in range(1, 256 + 1):
-				var t: int = extra_base + i
-				if not scheduler.has_side_command_for_tick(t, peer_game_side):
-					var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
-					scheduler.enqueue_command(noop_peer)
-			# 解除 strict_wait 暂停（consume 会覆盖，但我们同时保证命令齐）
+			# V0.45：缺省即 NO_OP，恢复后无需再预填对方 NO_OP 窗口。
 			scheduler.paused = false
 			simulator.push_event("战斗恢复！")
 		queue_redraw()
@@ -305,7 +298,7 @@ func _step_one_tick() -> bool:
 	var tick: int = scheduler.current_tick + 1
 	var exec_tick: int = tick
 
-	# 1) 非联机模式 Bot 思考（联机模式命令已预发，不需在此补 NO_OP）
+	# 1) 非联机模式 Bot 思考（联机模式真人对手的命令由网络层入队，缺省即 NO_OP）
 	if not online_mode:
 		var bot_cmds: Array[Dictionary] = bot_brain.update(
 			Config.TICK_DT, simulator, task_system, exec_tick
@@ -337,19 +330,10 @@ func _step_one_tick() -> bool:
 	if online_mode:
 		scheduler.save_state_snapshot(tick, simulator.snapshot(), task_system.snapshot())
 
-	# 3.5) 联机模式：预发未来 tick 的 NO_OP（扩大滑动窗口抗抖动）
-	#      每推进一个 tick，为 [tick + current_input_delay, tick + input_delay+NO_OP_AHEAD_WINDOW]
-	#      范围内缺 NO_OP 的位置预发占位；真实 PLAY_CARD 会覆盖同 tick 同 side 的 NO_OP。
-	#      同时检测：缺命令超过阈值时，主动向服务器请求补全。
+	# 3.5) V0.45：线上不再预发/发送 NO_OP，缺省即 NO_OP。
+	#      连续缺失超过阈值时，主动向服务器请求真实命令日志补全。
 	if online_mode:
-		var w_start: int = tick + scheduler.current_input_delay_ticks
-		var w_end: int = tick + scheduler.current_input_delay_ticks + Config.NO_OP_AHEAD_WINDOW
-		for ft in range(w_start, w_end + 1):
-			if not scheduler.has_side_command_for_tick(ft, my_game_side):
-				var noop_cmd: Dictionary = Command.no_op_command(ft, my_game_side)
-				scheduler.enqueue_command(noop_cmd)
-				_send_local_command_net(noop_cmd)
-		# —— V0.5 弱网：连续等待超过阈值 → 主动请求服务器补全对端缺失命令 ——
+		# —— V0.5 弱网：连续缺失超过阈值 → 主动请求服务器补全对端缺失命令 ——
 		if scheduler.should_request_missing_commands():
 			var miss_start: int = scheduler.current_tick + 1
 			var miss_end: int = scheduler.current_tick + scheduler.current_input_delay_ticks + Config.MAX_WAIT_TICKS_BEFORE_REQUEST
@@ -1152,8 +1136,8 @@ func _on_peer_left(who: String) -> void:
 
 
 # Issue5: 战斗中断线重连后，服务器下发 RESUME_BATTLE 恢复战场
-# 主机端（非重连方）：无 commands 数据，只需填充对方NO_OP并恢复倒计时
-# 客机端（重连方）：有 commands 数据，需要回放所有命令恢复战场，填充双方滑动窗口NO_OP
+# 主机端（非重连方）：无 commands 数据，只需恢复倒计时
+# 客机端（重连方）：有 commands 数据，需要回放所有命令恢复战场；V0.45 不再填充 NO_OP 窗口。
 func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_deck: Array[String], peer_deck: Array[String]) -> void:
 	# 重连成功：清除本机重连状态；对端恢复信号也会走到这里
 	reconnecting_locally = false
@@ -1171,14 +1155,7 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 	if side_role == "":
 		# —— 非重连方（战场状态完好）——
 		# 对端重连/重同步成功：立即恢复战斗，不再 3 秒倒计时。
-		# 为保证命令窗口充足，先为对方预填 256 tick 的 NO_OP 占位。
-		var base_tick: int = scheduler.current_tick
-		var FILL_WINDOW: int = 256  # ~ 4.3s 缓冲，足够命令往返
-		for i in range(1, FILL_WINDOW + 1):
-			var t: int = base_tick + i
-			if not scheduler.has_side_command_for_tick(t, peer_game_side):
-				var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
-				scheduler.enqueue_command(noop_peer)
+		# V0.45：缺省即 NO_OP，不需要预填对端命令窗口。
 		battle_restart_countdown = -1.0
 		scheduler.paused = false
 		online_status_text = "对方已重连，战斗继续"
@@ -1214,20 +1191,7 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 		selected_card_ids = my_deck.duplicate()
 		selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""
 		painter.info_card_id = selected_battle_card_id
-		# 填充双方滑动窗口的 NO_OP 占位（FILL_WINDOW ~ 4.3s 缓冲）
-		var base_tick: int = scheduler.current_tick
-		var FILL_WINDOW: int = 256
-		for i in range(1, FILL_WINDOW + 1):
-			var t: int = base_tick + i
-			# 本方 NO_OP：入队 + 通过网络发给对端（真实PLAY_CARD覆盖会被对端enqueue替换）
-			var noop_self: Dictionary = Command.no_op_command(t, my_game_side)
-			scheduler.enqueue_command(noop_self)
-			if i <= Config.INPUT_DELAY_TICKS:
-				_send_local_command_net(noop_self)
-			# 对方 NO_OP：只入队占位（真实命令到达后 enqueue_command 覆盖）
-			if not scheduler.has_side_command_for_tick(t, peer_game_side):
-				var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
-				scheduler.enqueue_command(noop_peer)
+		# V0.45：缺省即 NO_OP，重连后不再填充 NO_OP 窗口。
 		# 立即恢复战斗，不再 3 秒倒计时
 		battle_restart_countdown = -1.0
 		scheduler.paused = false
@@ -1264,18 +1228,7 @@ func _on_resync_data(commands: Array, target_tick: int, base_tick: int, seed_val
 		# 没有可用检查点：回退到从第 1 tick 全量重放（旧逻辑，仍保证可恢复）。
 		if commands.size() > 0 or target_tick > 0:
 			_replay_commands(commands, target_tick)
-	# 填充双方滑动窗口 NO_OP，并立即恢复战斗（不再 3 秒倒计时）
-	var fill_base_tick: int = scheduler.current_tick
-	var FILL_WINDOW: int = 256
-	for i in range(1, FILL_WINDOW + 1):
-		var t: int = fill_base_tick + i
-		var noop_self: Dictionary = Command.no_op_command(t, my_game_side)
-		scheduler.enqueue_command(noop_self)
-		if i <= Config.INPUT_DELAY_TICKS:
-			_send_local_command_net(noop_self)
-		if not scheduler.has_side_command_for_tick(t, peer_game_side):
-			var noop_peer: Dictionary = Command.no_op_command(t, peer_game_side)
-			scheduler.enqueue_command(noop_peer)
+	# V0.45：缺省即 NO_OP，重同步后不再填充 NO_OP 窗口。
 	battle_restart_countdown = -1.0
 	scheduler.paused = false
 	online_status_text = "同步完成，战斗继续"
@@ -1332,7 +1285,7 @@ func _recover_from_snapshot(base_tick: int, snap: Variant, commands: Array, targ
 	simulator.restore(snap_dict["sim"])
 	task_system.restore(snap_dict["task"])
 	scheduler.current_tick = base_tick
-	# 清掉 _start_online_battle 预发的旧 NO_OP 队列，稍后由恢复流程重新填充窗口。
+	# 清掉调度器中残留的 pending_commands，恢复流程会重新按需入队/补全。
 	scheduler.pending_commands.clear()
 	scheduler.received_checksums.clear()
 	# 把检查点也写回逐 tick 快照链，方便后续短窗口回滚使用。
@@ -1555,19 +1508,10 @@ func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> v
 	selected_card_ids = my_deck.duplicate()
 	# 通知绘制层本机操控的阵营（影响法力条、任务进度、进化高亮等8处显示判断）
 	painter.controlled_side = my_game_side
-	# 联机模式：预发前 INPUT_DELAY_TICKS + NO_OP_AHEAD_WINDOW 个 tick 的 NO_OP（弱网滑动窗口初始化）
-	# 双方都预发后，前 N 个 tick 的命令已齐，可以连续推进不需等待网络；
-	# 即使高延迟或 TCP 重传，窗口内的 NO_OP 占位也能避免 strict_wait 立即暂停。
+	# V0.45：不再预发/发送 NO_OP；开局仅清空命令发送历史并保存 tick 0 快照。
 	if online_mode:
-		var init_window: int = scheduler.current_input_delay_ticks + Config.NO_OP_AHEAD_WINDOW
-		for i in range(1, init_window + 1):
-			var noop_cmd: Dictionary = Command.no_op_command(i, my_game_side)
-			scheduler.enqueue_command(noop_cmd)
-			_send_local_command_net(noop_cmd)
-		# V0.5：开局清空客户端命令发送历史（避免旧内容混入新局冗余）
 		if net != null:
 			net.reset_send_history()
-		# V0.5 回滚：保存初始状态快照（tick 0，用于回滚到第 1 tick）
 		scheduler.save_state_snapshot(0, simulator.snapshot(), task_system.snapshot())
 	# 选第一张卡做默认选中；注意用 selected_card_ids（我的卡组），不要用 player_ids（guest端是对手卡组）
 	selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""

@@ -94,3 +94,20 @@
   的绑定地址是否为 `0.0.0.0`。
 - 回滚后仍无法启动 → 登录服务器查看 `tail -n 100 /opt/relay-server/relay_server.log`。
 - 本地 PowerShell 版本过低（Windows PowerShell 5.1 以下）→ 用 `deploy.cmd` 或升级 PowerShell。
+
+
+## V0.45 ENet 服务端（tools/relay_server_enet/）
+
+V0.45 起新增 Go ENet 中继服务器，默认监听 **UDP 8765**，不再是 TCP 8765。
+旧 `deploy.ps1` 继续用于 V0.4 Python TCP 中继；新 ENet 服务器请使用：
+
+- 命令：`.\deploy_enet.ps1`（或双击 `deploy_enet.cmd`）
+- 参数：与 `deploy.ps1` 相同（`-SetupKey` / `-Status` / `-SkipRestart` / `-DryRun`）
+- 配置：优先使用 `deploy_enet.config.json`；不存在时回退到 `deploy.config.json`。
+  建议复制 `deploy_enet.config.example.json` 为 `deploy_enet.config.json`，
+  其中 `remoteDir=/opt/relay-server-enet`、`remoteFile=relay_server_enet`、
+  `launchArgs=--host 0.0.0.0 --port 8765 --results /opt/relay-server-enet/match_results.jsonl`。
+- 构建：若本地没有编译好的 `relay_server_enet` 二进制，脚本会上传 `main.go/go.mod` 并在
+  服务器执行 `go build`（服务器需要 Go 1.22+ 与 libenet-dev）。
+- 健康检查：使用 `pgrep` + `ss -ulpn` 检查 UDP 监听，不再使用 TCP 探测。
+- 部署后需要放行 **UDP 8765**，而不是 TCP 8765。

@@ -1,26 +1,23 @@
-# V0.4 (P3) 联机客户端网络层 + V0.5 弱网优化。
+# V0.45 (P2) 联机客户端网络层：ENet raw packet。
+# 替换 V0.4 的 StreamPeerTCP + JSON Lines 实现。
 # 职责：
-#   - 连接/断开 TCP 中继服务器（协议：JSON Lines，每包 \n 分隔）
-#   - 发送房间请求（CREATE_ROOM / JOIN_ROOM / READY / COMMAND / RESULT）
-#   - 解析服务器推送事件并通过 Signal 通知上层 UI 与控制器
-#   - V0.5：命令历史缓存、冗余批量发送（COMMAND_BATCH）、主动请求缺失命令（REQUEST_COMMANDS/COMMANDS_REPLY）
+#   - 用 Godot ENetMultiplayerPeer 创建客户端连接（UDP 8765）。
+#   - 以 raw packet 承载自定义协议：0x00+JSON 控制包、0x01 PLAY_CARD、0x02 CHECKSUM、0x03 PING。
+#   - 保持 V0.4 的上层信号接口，使 v01_game.gd 的房间/对局流程改动最小。
 #
-# 用法：
+# 用法与旧版一致：
 #   var nc = NetworkClient.new()
-#   nc.connected_to_server.connect(...)
-#   nc.room_created.connect(...)
-#   nc.start_match_received.connect(func(seed,my_side,my_deck,peer_deck): ...)
-#   nc.command_received.connect(func(cmd_dict): scheduler.enqueue_command(cmd_dict))
-#   nc.commands_batch_received.connect(func(cmd_arr): scheduler.enqueue_command_batch(cmd_arr))
+#   nc.start_match_received.connect(...)
 #   nc.connect_to_server(host, port)
 #   ...
-#   nc.send_command_buffered(my_command_dict)  # V0.5：自动带冗余批量发送
+#   nc.send_command_buffered(my_command_dict)
 #
 # 注意：本类纯网络 IO，不持有对局逻辑状态；scheduler/simulator 由控制器协调。
 extends RefCounted
 
 const Config = preload("res://scripts/config/game_config.gd")
 const Command = preload("res://scripts/networking/command.gd")
+const EnetProtocol = preload("res://scripts/networking/enet_protocol.gd")
 
 signal connected_to_server()
 signal connection_failed(reason: String)
@@ -34,12 +31,14 @@ signal peer_disconnected(grace_seconds: float)
 signal opponent_win_by_disconnect(winner: String, room_code: String)
 signal start_match_received(seed: int, my_side: String, my_deck: Array[String], peer_deck: Array[String])
 signal command_received(payload: Dictionary)
-# —— V0.5：批量命令到达（内含冗余），上层应调用 scheduler.enqueue_command_batch 去重入队
+# —— V0.5 兼容：批量命令到达（ENet 下每次收到一条真实命令也广播长度 1 的数组）——
 signal commands_batch_received(cmd_list: Array)
-# —— V0.5：对端/服务器对我方 REQUEST_COMMANDS 的应答到达，上层调用 scheduler.enqueue_command_batch 补全
+# —— V0.5 兼容：服务器命令日志应答——
 signal commands_reply_received(from_tick: int, to_tick: int, matched_commands: Array)
-# —— V0.5：服务器转发的对端命令请求（一般由服务器直接用 command_log 应答，客户端可忽略此信号）
+# —— V0.5 兼容：服务器转发的对端命令请求——
 signal request_commands_received(from_tick: int, to_tick: int, side_filter: String)
+# —— V0.45：RTT 采样（PING/PONG，可选）——
+signal ping_received(time_ms: int)
 
 signal result_received(winner: String, room_code: String)
 signal peer_rematch_received()
@@ -50,25 +49,24 @@ signal server_error(message: String)
 
 # 配置
 var default_host: String = "64.90.30.36"
-var default_port: int = 8765
-# V0.5：冗余发送开关（默认开启）
-var enable_redundancy: bool = true
+var default_port: int = Config.ENET_PORT
+# V0.45 冗余发送开关保留为兼容项；新主线不再逐 tick 发 NO_OP，也不使用 COMMAND_BATCH。
+var enable_redundancy: bool = false
 
 # —— 断线重连：本端身份令牌（服务器在 ROOM_CREATED/ROOM_JOINED 时下发）——
 var client_id: String = ""
 
 # 运行时
-var _tcp: StreamPeerTCP = StreamPeerTCP.new()
-var _recv_buf: PackedByteArray = PackedByteArray()
+var _enet: ENetMultiplayerPeer = null
 var _running: bool = false
+var _was_connected: bool = false
 var _last_error: String = ""
 
-# —— V0.5：命令发送历史（按发送时间正序，最新在尾；最多保留 Config.COMMAND_REDUNDANCY_COUNT * 4 条）——
+# —— 兼容 V0.5：命令发送历史（保留接口，ENet 主线不使用冗余批量）——
 var _send_history: Array = []
-const HISTORY_MAX: int = 96  # 上限（冗余条数的 8 倍，足够覆盖网络抖动 + 请求补全窗口）
+const HISTORY_MAX: int = 96
 
 
-# —— V0.5：重置发送历史（新对局开始时调用，防止旧局命令污染下一局冗余）——
 func reset_send_history() -> void:
 	_send_history.clear()
 
@@ -76,35 +74,41 @@ func reset_send_history() -> void:
 # —— 连接控制 ——
 func connect_to_server(host: String = "", port: int = 0) -> void:
 	disconnect_from_server()
-	_was_connected = false
 	var h: String = host if host != "" else default_host
 	var p: int = port if port > 0 else default_port
-	var ok: Error = _tcp.connect_to_host(h, p)
-	if ok != OK:
-		_last_error = "connect call failed: %d" % int(ok)
+	var peer := ENetMultiplayerPeer.new()
+	var err: Error = peer.create_client(h, p, Config.ENET_CHANNEL_COUNT)
+	if err != OK:
+		_last_error = "enet create_client failed: %d" % int(err)
 		emit_signal("connection_failed", _last_error)
 		return
-	_recv_buf.clear()
+	_enet = peer
 	_running = true
+	_was_connected = false
 	_last_error = ""
 	reset_send_history()
-	# 轮询由 attach_to_node 的 Timer 驱动
+	# 轮询由 attach_to_node 的 Timer 或控制器 _process 驱动
 
 
 func disconnect_from_server() -> void:
 	_running = false
 	_was_connected = false
-	# 轮询由 attach_to_node 的 Timer 驱动，无需手动停止
-	if _tcp != null:
-		_tcp.disconnect_from_host()
-	_recv_buf.clear()
+	if _enet != null:
+		_enet.close()
+		_enet = null
+	_last_error = ""
 	reset_send_history()
 
 
 func is_tcp_connected() -> bool:
-	if _tcp == null:
+	# 保留旧方法名以兼容 v01_game.gd；实现已是 ENet 连接状态。
+	return is_enet_connected()
+
+
+func is_enet_connected() -> bool:
+	if _enet == null or not _running:
 		return false
-	return _tcp.get_status() == StreamPeerTCP.STATUS_CONNECTED
+	return _enet.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
 
 
 # —— 房间与对局请求（客户端 → 服务器）——
@@ -123,7 +127,8 @@ func send_join_room(room_code: String) -> void:
 
 
 func send_heartbeat() -> void:
-	_send_json({"type": "HEARTBEAT"})
+	# 心跳/在线探测走不可靠通道，减少可靠通道负载。
+	_send_json({"type": "HEARTBEAT"}, Config.ENET_CHANNEL_UNRELIABLE, false)
 
 
 func send_ready(ready_flag: bool, my_deck: Array[String]) -> void:
@@ -133,27 +138,25 @@ func send_ready(ready_flag: bool, my_deck: Array[String]) -> void:
 	_send_json({"type": "READY", "ready": ready_flag, "deck": deck_strs})
 
 
-# 兼容旧接口：发送单条命令（不带冗余）。
-# V0.5 建议优先使用 send_command_buffered。
 func send_command(cmd_dict: Dictionary) -> void:
-	_send_json({"type": "COMMAND", "payload": cmd_dict})
-
-
-# —— V0.5：发送命令 + 自动加入发送历史 + 可选冗余批量包装 ——
-# 新的主发送入口。联机模式下调用此函数可获得抗抖动冗余。
-func send_command_buffered(cmd_dict: Dictionary) -> void:
-	# 先加入历史缓存
-	_history_append(cmd_dict)
-	if enable_redundancy:
-		# 包装为 COMMAND_BATCH：主命令 + 最近 COMMAND_REDUNDANCY_COUNT 条历史
-		var batch: Dictionary = Command.wrap_command_batch(cmd_dict, _send_history, Config.COMMAND_REDUNDANCY_COUNT)
-		_send_json({"type": "COMMAND", "payload": batch})
+	var cmd_type: String = String(cmd_dict.get("type", ""))
+	if cmd_type == Command.CMD_PLAY_CARD:
+		_send_packet(EnetProtocol.encode_play_card(cmd_dict), Config.ENET_CHANNEL_RELIABLE, true)
+	elif cmd_type == Command.CMD_CHECKSUM:
+		_send_packet(EnetProtocol.encode_checksum(cmd_dict), Config.ENET_CHANNEL_RELIABLE, true)
+	elif cmd_type == Command.CMD_NO_OP:
+		# V0.45 不再线上发送 NO_OP：缺省即 NO_OP。
+		return
 	else:
-		# 冗余关闭：走旧的单条发送
+		# 兼容旧网络包装/其它控制类 payload，走 JSON。
 		_send_json({"type": "COMMAND", "payload": cmd_dict})
 
 
-# —— V0.5：主动请求 [from_tick, to_tick] 范围内的命令（触发服务器查 command_log 回发 COMMANDS_REPLY）——
+func send_command_buffered(cmd_dict: Dictionary) -> void:
+	_history_append(cmd_dict)
+	send_command(cmd_dict)
+
+
 func send_request_commands(from_tick: int, to_tick: int, side_filter: String = "") -> void:
 	var req: Dictionary = Command.request_commands(from_tick, to_tick, side_filter)
 	_send_json({"type": "COMMAND", "payload": req})
@@ -178,7 +181,7 @@ func send_resync(target_tick: int, base_tick: int = 0) -> void:
 	_send_json({"type": "RESYNC", "tick": target_tick, "base_tick": base_tick})
 
 
-# —— V0.5 内部：把一条命令追加到历史环形缓冲 ——
+# —— V0.5 内部：把一条命令追加到历史环形缓冲（兼容接口）——
 func _history_append(cmd_dict: Dictionary) -> void:
 	_send_history.append(cmd_dict.duplicate(true))
 	while _send_history.size() > HISTORY_MAX:
@@ -186,87 +189,79 @@ func _history_append(cmd_dict: Dictionary) -> void:
 
 
 # —— 内部发送/轮询 ——
-func _send_json(obj: Dictionary) -> void:
+func _send_json(obj: Dictionary, channel: int = Config.ENET_CHANNEL_RELIABLE, reliable: bool = true) -> void:
 	if not _running:
 		return
-	var json_str: String = JSON.stringify(obj)
-	var payload: PackedByteArray = (json_str + "\n").to_utf8_buffer()
-	var err: Error = _tcp.put_data(payload)
+	_send_packet(EnetProtocol.encode_json(obj), channel, reliable)
+
+
+func _send_packet(data: PackedByteArray, channel: int, reliable: bool) -> void:
+	if _enet == null or not is_enet_connected():
+		return
+	_enet.set_transfer_channel(channel)
+	_enet.set_transfer_mode(MultiplayerPeer.TRANSFER_MODE_RELIABLE if reliable else MultiplayerPeer.TRANSFER_MODE_UNRELIABLE)
+	var err: Error = _enet.put_packet(data)
 	if err != OK:
-		_last_error = "put_data failed: %d" % int(err)
-		_running = false
-		emit_signal("disconnected")
+		_last_error = "enet put_packet failed: %d" % int(err)
+		_handle_disconnected()
 
 
-# Godot 4.5 无内建帧回调（RefCounted 非 Node）。我们用一个假的 Timer 思路：
-# 让控制器（Control/Node）每帧调用 _poll()，或我们每 0.033s 触发一次自定义 poll。
-# 此处提供 _poll() 公开入口，由控制器 _process 每帧调用。
 func poll() -> void:
-	if not _running:
+	if not _running or _enet == null:
 		return
-	# 必须先 poll 才能推动 TCP 状态机（STATUS_CONNECTING → STATUS_CONNECTED）
-	_tcp.poll()
-	var st: int = int(_tcp.get_status())
-	if st == StreamPeerTCP.STATUS_NONE:
-		# 还没连上或连接失败
-		return
-	if st == StreamPeerTCP.STATUS_ERROR:
-		_last_error = "socket error"
-		_running = false
-		if not _was_connected:
-			emit_signal("connection_failed", _last_error)
-		else:
-			emit_signal("disconnected")
-		_was_connected = false
-		return
-	if st == StreamPeerTCP.STATUS_CONNECTING:
-		return
-	if st == StreamPeerTCP.STATUS_CONNECTED:
+	_enet.poll()
+	var st: int = int(_enet.get_connection_status())
+	if st == MultiplayerPeer.CONNECTION_CONNECTED:
 		if not _was_connected:
 			_was_connected = true
 			emit_signal("connected_to_server")
 		_drain_incoming()
+	elif st == MultiplayerPeer.CONNECTION_DISCONNECTED:
+		_handle_disconnected()
 
 
-var _was_connected: bool = false
+func _handle_disconnected() -> void:
+	var had_connection: bool = _was_connected
+	_running = false
+	_was_connected = false
+	if _enet != null:
+		_enet.close()
+		_enet = null
+	reset_send_history()
+	if had_connection:
+		emit_signal("disconnected")
+	else:
+		emit_signal("connection_failed", _last_error if _last_error != "" else "connection closed")
 
 
 func _drain_incoming() -> void:
-	while true:
-		var avail: int = int(_tcp.get_available_bytes())
-		if avail <= 0:
-			break
-		var read_r = _tcp.get_partial_data(avail)
-		var err: int = int(read_r[0])
-		var chunk: PackedByteArray = read_r[1]
-		if err != OK or chunk.size() == 0:
-			break
-		_recv_buf.append_array(chunk)
-	# 按 \n 切包
-	while true:
-		var nl_idx: int = -1
-		for i in range(_recv_buf.size()):
-			if _recv_buf[i] == 10:  # '\n'
-				nl_idx = i
-				break
-		if nl_idx < 0:
-			break
-		var line_bytes: PackedByteArray = _recv_buf.slice(0, nl_idx)
-		if nl_idx + 1 < _recv_buf.size():
-			_recv_buf = _recv_buf.slice(nl_idx + 1, _recv_buf.size())
-		else:
-			_recv_buf.clear()
-		var text: String = line_bytes.get_string_from_utf8()
-		if text.strip_edges() == "":
-			continue
-		_handle_line(text)
+	while _enet != null and _enet.get_available_packet_count() > 0:
+		var channel: int = _enet.get_packet_channel()
+		var data: PackedByteArray = _enet.get_packet()
+		_handle_packet(data, channel)
 
 
-func _handle_line(text: String) -> void:
-	var parsed: Variant = JSON.parse_string(text)
-	if typeof(parsed) != TYPE_DICTIONARY:
-		return
-	var msg: Dictionary = parsed
+func _handle_packet(data: PackedByteArray, channel: int) -> void:
+	var parsed: Dictionary = EnetProtocol.parse_packet(data, channel)
+	var kind: String = String(parsed.get("kind", "invalid"))
+	match kind:
+		"json":
+			var payload: Variant = parsed.get("payload", {})
+			if typeof(payload) == TYPE_DICTIONARY:
+				_handle_json(Dictionary(payload))
+		"command":
+			var cmd: Variant = parsed.get("payload", {})
+			if typeof(cmd) == TYPE_DICTIONARY:
+				# 单条真实命令：兼容旧 command_received，也广播 batch 供 enqueue_command_batch 处理。
+				emit_signal("command_received", Dictionary(cmd))
+				emit_signal("commands_batch_received", [Dictionary(cmd)])
+		"ping":
+			emit_signal("ping_received", int(parsed.get("time_ms", 0)))
+		_:
+			pass
+
+
+func _handle_json(msg: Dictionary) -> void:
 	var t: String = String(msg.get("type", ""))
 	match t:
 		"ROOM_CREATED":
@@ -290,7 +285,6 @@ func _handle_line(text: String) -> void:
 			var deck_b: Array[String] = []
 			for raw in msg.get("peer_deck", []):
 				deck_b.append(String(raw))
-			# 新对局开始：清空发送历史（避免上一局冗余污染）
 			reset_send_history()
 			emit_signal("start_match_received", int(msg.get("seed", 0)), String(msg.get("my_side", "host")), deck_a, deck_b)
 		"COMMAND":
@@ -304,10 +298,11 @@ func _handle_line(text: String) -> void:
 		"PEER_LEFT":
 			emit_signal("peer_left_received", String(msg.get("who", "")))
 		"RESUME_BATTLE":
-			# 主机端收到的是无数据的 RESUME_BATTLE（只需恢复倒计时）
-			# 客机端收到的是带 commands/seed/decks 的 RESUME_BATTLE（需要回放恢复战场）
 			var cmds: Array = []
-			for raw in msg.get("commands", []):
+			var resume_raw: Variant = msg.get("commands", [])
+			if typeof(resume_raw) != TYPE_ARRAY:
+				resume_raw = []
+			for raw in resume_raw:
 				if typeof(raw) == TYPE_DICTIONARY:
 					cmds.append(Dictionary(raw))
 			var deck_a: Array[String] = []
@@ -319,7 +314,10 @@ func _handle_line(text: String) -> void:
 			emit_signal("resume_battle_received", cmds, int(msg.get("seed", 0)), String(msg.get("my_side", "")), deck_a, deck_b)
 		"RESYNC_DATA":
 			var rcmds: Array = []
-			for raw in msg.get("commands", []):
+			var resync_raw: Variant = msg.get("commands", [])
+			if typeof(resync_raw) != TYPE_ARRAY:
+				resync_raw = []
+			for raw in resync_raw:
 				if typeof(raw) == TYPE_DICTIONARY:
 					rcmds.append(Dictionary(raw))
 			var rdeck_a: Array[String] = []
@@ -333,47 +331,36 @@ func _handle_line(text: String) -> void:
 			emit_signal("server_error", String(msg.get("message", "")))
 
 
-# —— V0.5：分发来自服务器的 COMMAND payload ——
-# 可能是：
-#   1) 单条战斗命令（旧格式 / 未包装）→ 走 command_received 兼容 + commands_batch_received([cmd])
-#   2) COMMAND_BATCH（带冗余的新格式）→ 走 commands_batch_received(批量)
-#   3) REQUEST_COMMANDS（服务器转发的对端请求，通常服务器自己答，此为兜底）→ 信号上报
-#   4) COMMANDS_REPLY（服务器对我方 REQUEST_COMMANDS 的应答）→ commands_reply_received 信号
 func _dispatch_incoming_command(payload: Dictionary) -> void:
 	if Command.is_network_wrapper(payload):
 		var net_type: String = String(payload.get("_net_type", ""))
 		match net_type:
 			Command.NET_COMMAND_BATCH:
 				var cmds: Array = Command.unwrap_commands(payload)
-				# V0.5 新信号：批量到达，由上层去重入队
 				emit_signal("commands_batch_received", cmds)
-				# 兼容：也把第一条（最新的主命令）走旧信号，避免上层未改时功能退化
 				if cmds.size() > 0 and typeof(cmds[cmds.size() - 1]) == TYPE_DICTIONARY:
 					emit_signal("command_received", Dictionary(cmds[cmds.size() - 1]))
 			Command.NET_REQUEST_COMMANDS:
-				var ft: int = int(payload.get("from_tick", 0))
-				var tt: int = int(payload.get("to_tick", 0))
-				var sf: String = String(payload.get("side", ""))
-				emit_signal("request_commands_received", ft, tt, sf)
+				emit_signal("request_commands_received", int(payload.get("from_tick", 0)), int(payload.get("to_tick", 0)), String(payload.get("side", "")))
 			Command.NET_COMMANDS_REPLY:
 				var ft: int = int(payload.get("from_tick", 0))
 				var tt: int = int(payload.get("to_tick", 0))
 				var matched: Array = []
-				for raw in payload.get("commands", []):
+				var raw_commands: Variant = payload.get("commands", [])
+				if typeof(raw_commands) != TYPE_ARRAY:
+					raw_commands = []
+				for raw in raw_commands:
 					if typeof(raw) == TYPE_DICTIONARY:
 						matched.append(Dictionary(raw))
 				emit_signal("commands_reply_received", ft, tt, matched)
 			_:
-				# 未知网络包装：忽略（安全兜底）
 				pass
 	else:
-		# 旧格式：单条命令
 		emit_signal("command_received", payload)
 		emit_signal("commands_batch_received", [payload])
 
 
-# —— 可选：由持有方用 Node 挂 _process 每帧调用 poll；此处提供便利方法
-#    在 Node 中：nc.attach_to_node(self)，自动每帧 _process 调用 poll()
+# —— 可选：由持有方用 Node 挂 _process 每帧调用 poll；此处提供便利方法 ——
 var _attached_node: Node = null
 var _timer: Timer = null
 

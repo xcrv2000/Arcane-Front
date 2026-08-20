@@ -79,6 +79,7 @@ const FP_SCALE_F: float = 1000.0
 const DISCONNECT_PAUSE_SECONDS: float = 30.0  # 断线暂停等待时长，超时判负
 
 # —— V0.5 弱网优化参数（新增）——
+# V0.45 起不再逐 tick 预发/发送 NO_OP；此常量仅保留给旧逻辑参考/回退，新主线不使用。
 # NO_OP 预发窗口：每 tick 预发到未来这么多 tick（90 tick = 1.5 秒缓冲）
 # 越大越抗抖，但断线恢复时的 NO_OP 占位越多（真实命令覆盖即可，不影响结果）
 const NO_OP_AHEAD_WINDOW: int = 90
@@ -94,3 +95,9 @@ const INPUT_DELAY_MIN_TICKS: int = 4
 const INPUT_DELAY_MAX_TICKS: int = 20
 # 抖动统计窗口：统计最近多少个 tick 的命令到达延迟
 const JITTER_WINDOW_SIZE: int = 120  # 2 秒窗口
+# —— V0.45 ENet 联机传输层参数（新增）——
+const ENET_PORT: int = 8765
+const ENET_CHANNEL_COUNT: int = 2
+const ENET_CHANNEL_RELIABLE: int = 0
+const ENET_CHANNEL_UNRELIABLE: int = 1
+const ENET_HEARTBEAT_INTERVAL: float = 2.0

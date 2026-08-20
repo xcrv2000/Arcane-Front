@@ -4,19 +4,19 @@
 #   - 维护命令队列（按 tick 索引，每 tick 双方各一条命令）
 #   - 输入延迟：玩家/远端/Bot 的命令标注到 tick_now + INPUT_DELAY_TICKS 后执行
 #   - 累积器：帧 delta → 整数 tick 推进
-#   - P2：等待对端命令（strict_wait 模式）、checksum 比对、desync 检测与暂停
+#   - P2：命令消费（V0.45 起缺省 NO_OP）、checksum 比对、desync 检测与回滚
 #   - V0.5 弱网：批量命令入队、命令缺失统计、抖动测量、自适应输入延迟
 #
-# 使用模式：
+# 使用模式（V0.45 起）：
 #   - 本地单机（strict_wait=false）：缺任一方命令自动填 NO_OP，不暂停，Bot 不需要预先送入
-#   - 联机（strict_wait=true）：缺任一方命令则 consume 返回空数组，调用方不推进 tick，模拟暂停等待
+#   - 联机（strict_wait=true）：缺任一方命令也自动填 NO_OP 继续推进，不暂停；迟到真实命令通过回滚重放纠正
 extends RefCounted
 
 const Config = preload("res://scripts/config/game_config.gd")
 const Command = preload("res://scripts/networking/command.gd")
 
 # 调度配置
-var strict_wait: bool = false  # true=联机等待模式；false=本地Bot兼容模式
+var strict_wait: bool = false  # true=联机模式；false=本地Bot兼容模式（V0.45 起缺命令都不暂停）
 var sides: Array[String] = [Config.PLAYER, Config.BOT]  # 参与方列表，联机可改为 [player, remote_bot_placeholder]
 
 # —— V0.5 自适应输入延迟（可运行时动态调整，默认=Config.INPUT_DELAY_TICKS）——
@@ -232,22 +232,26 @@ func missing_ticks_for_side(peer_side: String, from_tick: int, to_tick: int) -> 
 # - strict_wait=true：如果缺任一方命令则返回空数组 []，调用方不得推进该 tick（模拟暂停等待）
 # - strict_wait=false：缺命令填 NO_OP，永远返回有效列表
 func consume_tick_commands(tick: int) -> Array[Dictionary]:
-	if strict_wait and not has_tick_commands(tick):
-		paused = true
-		consecutive_wait_ticks += 1  # V0.5：累计等待
-		paused_reason = "等待 %s 的 T%d 命令（已等 %d tick）" % [_missing_sides_for_tick(tick), tick, consecutive_wait_ticks]
-		return []
-	paused = false
-	paused_reason = ""
-	consecutive_wait_ticks = 0  # V0.5：推进成功，清零等待计数
+	# V0.45：缺省即 NO_OP。即使 strict_wait=true，缺某方命令也不再暂停，
+	# 而是用 NO_OP 占位继续推进；迟到真实命令由 enqueue_command_batch 的回滚机制纠正。
+	var missing: Array[String] = []
+	var tick_table: Dictionary = pending_commands.get(tick, {})
+	for side in sides:
+		if not tick_table.has(side):
+			missing.append(side)
+	if missing.size() > 0:
+		consecutive_wait_ticks += 1
+		paused_reason = "缺 %s 的 T%d 命令（按 NO_OP 推进，已缺 %d tick）" % [", ".join(missing), tick, consecutive_wait_ticks]
+	else:
+		consecutive_wait_ticks = 0  # 推进成功，清零等待计数
+		paused_reason = ""
 
 	var result: Array[Dictionary] = []
-	var tick_table: Dictionary = pending_commands.get(tick, {})
 	for side in sides:
 		if tick_table.has(side):
 			result.append(tick_table[side])
 		else:
-			# 非严格模式：自动填 NO_OP
+			# 缺省即 NO_OP：本地与联机统一使用该占位。
 			result.append(Command.no_op_command(tick, side))
 	if pending_commands.has(tick):
 		pending_commands.erase(tick)
