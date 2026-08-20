@@ -51,6 +51,7 @@ const (
 	disconnectGraceSeconds = 30.0
 	heartbeatTimeout       = 10.0
 	heartbeatSweepInterval = 5.0
+	startCountdownDuration = 3 * time.Second
 )
 
 var matchResultsPath = filepath.Join("match_results.jsonl")
@@ -75,6 +76,7 @@ type Room struct {
 	Guest    *Client
 	Seed     int64
 	Started  bool
+	StartAt  time.Time
 	Commands map[string]map[string]interface{} // "tick|side" -> command dict
 }
 
@@ -110,7 +112,7 @@ func main() {
 	log.Printf("V0.45 ENet relay listening on %s:%d/udp", *hostFlag, port)
 	lastSweep := time.Now()
 	for {
-		ev := serverHost.Service(1000)
+		ev := serverHost.Service(100)
 		switch ev.GetType() {
 		case enet.EventConnect:
 			s.handleConnect(ev.GetPeer())
@@ -122,6 +124,8 @@ func main() {
 			packet.Destroy()
 			s.handleReceive(ev.GetPeer(), ev.GetChannelID(), data)
 		}
+
+		s.startReadyRooms(time.Now())
 
 		if time.Since(lastSweep) >= heartbeatSweepInterval*time.Second {
 			lastSweep = time.Now()
@@ -247,6 +251,7 @@ func (s *Server) handleClientGone(c *Client) {
 		return
 	}
 	// 未开战：直接移除，并通知对端。
+	s.cancelStartCountdown(room)
 	other := room.Other(c)
 	if c.Side == "host" {
 		room.Host = nil
@@ -438,13 +443,58 @@ func (s *Server) handleReady(c *Client, msg map[string]interface{}) {
 		_ = s.sendJSON(other.Peer, map[string]interface{}{"type": "PEER_READY", "side": c.Side, "ready": ready}, channelReliable, true)
 	}
 	if room.Host != nil && room.Guest != nil && room.Host.Ready && room.Guest.Ready && !room.Started {
+		if room.StartAt.IsZero() {
+			room.StartAt = time.Now().Add(startCountdownDuration)
+			s.broadcastStartCountdown(room, startCountdownDuration.Seconds())
+			log.Printf("room start countdown: %s seconds=%.0f", room.Code, startCountdownDuration.Seconds())
+		}
+	} else {
+		s.cancelStartCountdown(room)
+	}
+}
+
+func (s *Server) broadcastStartCountdown(room *Room, seconds float64) {
+	payload := map[string]interface{}{"type": "START_COUNTDOWN", "seconds": seconds}
+	if room.Host != nil && !room.Host.Disconnected {
+		_ = s.sendJSON(room.Host.Peer, payload, channelReliable, true)
+	}
+	if room.Guest != nil && !room.Guest.Disconnected {
+		_ = s.sendJSON(room.Guest.Peer, payload, channelReliable, true)
+	}
+}
+
+func (s *Server) cancelStartCountdown(room *Room) {
+	if room == nil || room.StartAt.IsZero() || room.Started {
+		return
+	}
+	room.StartAt = time.Time{}
+	s.broadcastStartCountdown(room, 0)
+	log.Printf("room start countdown cancelled: %s", room.Code)
+}
+
+func (s *Server) startReadyRooms(now time.Time) {
+	for _, room := range s.rooms {
+		if room.Started || room.StartAt.IsZero() || now.Before(room.StartAt) {
+			continue
+		}
+		if !room.canStart(now) {
+			s.cancelStartCountdown(room)
+			continue
+		}
 		room.Started = true
+		room.StartAt = time.Time{}
 		room.Seed = rand.Int63()
 		room.Commands = map[string]map[string]interface{}{}
 		_ = s.sendJSON(room.Host.Peer, s.startPayload(room, room.Host), channelReliable, true)
 		_ = s.sendJSON(room.Guest.Peer, s.startPayload(room, room.Guest), channelReliable, true)
 		log.Printf("room started: %s seed=%d", room.Code, room.Seed)
 	}
+}
+
+func (r *Room) canStart(now time.Time) bool {
+	return r != nil && !r.Started && !r.StartAt.IsZero() && !now.Before(r.StartAt) &&
+		r.Host != nil && r.Guest != nil && r.Host.Ready && r.Guest.Ready &&
+		!r.Host.Disconnected && !r.Guest.Disconnected
 }
 
 func (s *Server) startPayload(room *Room, c *Client) map[string]interface{} {

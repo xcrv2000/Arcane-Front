@@ -25,6 +25,12 @@ var repository_card_rects: Dictionary = {}
 var deck_slot_rects: Dictionary = {}
 var back_rect: Rect2 = Rect2()
 var save_deck_rect: Rect2 = Rect2()
+var main_deck_prev_rect: Rect2 = Rect2()
+var main_deck_next_rect: Rect2 = Rect2()
+var deck_preset_prev_rect: Rect2 = Rect2()
+var deck_preset_next_rect: Rect2 = Rect2()
+var add_deck_rect: Rect2 = Rect2()
+var delete_deck_rect: Rect2 = Rect2()
 var page_prev_rect: Rect2 = Rect2()
 var page_next_rect: Rect2 = Rect2()
 var restart_rect: Rect2 = Rect2()
@@ -123,7 +129,7 @@ func draw_background(canvas: CanvasItem) -> void:
 
 
 # —— 对局前界面 ——
-func draw_main_menu(canvas: CanvasItem, saved_deck_ids: Array[String], status_text: String = "") -> void:
+func draw_main_menu(canvas: CanvasItem, saved_deck_ids: Array[String], status_text: String = "", active_deck_name: String = "牌组 1", active_deck_index: int = 0, deck_count: int = 1) -> void:
 	main_menu_rects.clear()
 	var margin: float = max(20.0, view_size.x * 0.055)
 	helpers.draw_text_line(canvas, "奥术前线", Rect2(margin, 38.0, view_size.x - margin * 2.0, 46.0), 34, Color(0.95, 0.96, 0.98), HORIZONTAL_ALIGNMENT_CENTER)
@@ -148,9 +154,17 @@ func draw_main_menu(canvas: CanvasItem, saved_deck_ids: Array[String], status_te
 		_draw_menu_button(canvas, rect, String(entry["title"]), String(entry["hint"]), entry["accent"])
 
 	var deck_top: float = max(button_top + button_height * 2.0 + gap + 54.0, view_size.y * 0.46)
-	helpers.draw_text_line(canvas, "当前牌组  %d/%d" % [saved_deck_ids.size(), Config.CARD_PICK_COUNT], Rect2(margin, deck_top - 38.0, view_size.x - margin * 2.0, 28.0), 19, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
+	main_deck_prev_rect = Rect2(margin, deck_top - 42.0, 40.0, 32.0)
+	main_deck_next_rect = Rect2(view_size.x - margin - 40.0, deck_top - 42.0, 40.0, 32.0)
+	var can_switch: bool = deck_count > 1
+	helpers.draw_panel(canvas, main_deck_prev_rect, Color(0.14, 0.18, 0.22) if can_switch else Color(0.09, 0.10, 0.12), 5.0, Color(0.34, 0.48, 0.60) if can_switch else Color(0.20, 0.22, 0.25), 1.0)
+	helpers.draw_panel(canvas, main_deck_next_rect, Color(0.14, 0.18, 0.22) if can_switch else Color(0.09, 0.10, 0.12), 5.0, Color(0.34, 0.48, 0.60) if can_switch else Color(0.20, 0.22, 0.25), 1.0)
+	helpers.draw_text_line(canvas, "‹", main_deck_prev_rect, 22, Color(0.86, 0.90, 0.94) if can_switch else Color(0.36, 0.39, 0.43), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "›", main_deck_next_rect, 22, Color(0.86, 0.90, 0.94) if can_switch else Color(0.36, 0.39, 0.43), HORIZONTAL_ALIGNMENT_CENTER)
+	var deck_title: String = "当前牌组：%s  ·  %d/%d  ·  %d/%d" % [active_deck_name, saved_deck_ids.size(), Config.CARD_PICK_COUNT, active_deck_index + 1, deck_count]
+	helpers.draw_text_line(canvas, deck_title, Rect2(margin + 48.0, deck_top - 40.0, view_size.x - margin * 2.0 - 96.0, 28.0), 17, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_CENTER)
 	_draw_deck_preview(canvas, saved_deck_ids, Rect2(margin, deck_top, view_size.x - margin * 2.0, min(360.0, view_size.y - deck_top - 62.0)))
-	var footer: String = status_text if status_text != "" else "单机与联机共用已保存的当前牌组"
+	var footer: String = status_text if status_text != "" else "左右切换牌组；单机与联机使用当前预设"
 	helpers.draw_text_line(canvas, footer, Rect2(margin, view_size.y - 42.0, view_size.x - margin * 2.0, 20.0), 13, Color(0.60, 0.68, 0.76), HORIZONTAL_ALIGNMENT_CENTER)
 
 
@@ -178,6 +192,11 @@ func _draw_deck_preview(canvas: CanvasItem, deck_ids: Array[String], area: Rect2
 			helpers.draw_text_line(canvas, "空位 %d" % (index + 1), rect, 14, Color(0.42, 0.46, 0.52), HORIZONTAL_ALIGNMENT_CENTER)
 
 
+# 房间界面复用同一套牌组卡片绘制。
+func draw_deck_preview(canvas: CanvasItem, deck_ids: Array[String], area: Rect2) -> void:
+	_draw_deck_preview(canvas, deck_ids, area)
+
+
 func draw_compendium(canvas: CanvasItem, focused_card_id: String, page: int) -> void:
 	repository_card_rects.clear()
 	_draw_frontend_header(canvas, "图鉴", "选择下方单位，查看完整说明")
@@ -189,24 +208,41 @@ func draw_compendium(canvas: CanvasItem, focused_card_id: String, page: int) -> 
 	_draw_repository(canvas, Rect2(margin, 516.0, view_size.x - margin * 2.0, view_size.y - 538.0), focused_card_id, [], catalog_cards, page)
 
 
-func draw_deck_builder(canvas: CanvasItem, draft_ids: Array[String], status_text: String, page: int) -> void:
+func draw_deck_builder(canvas: CanvasItem, draft_ids: Array[String], status_text: String, page: int, active_deck_name: String = "牌组 1", active_deck_index: int = 0, deck_count: int = 1, can_add_deck: bool = true) -> void:
 	repository_card_rects.clear()
 	deck_slot_rects.clear()
-	_draw_frontend_header(canvas, "牌组", "选择 6 张卡，保存后供单机与联机使用")
+	_draw_frontend_header(canvas, "牌组", "管理多套预设；选择 6 张卡并保存当前预设")
 	var margin: float = max(18.0, view_size.x * 0.04)
 	save_deck_rect = Rect2(view_size.x - margin - 140.0, 22.0, 140.0, 44.0)
 	var save_enabled: bool = draft_ids.size() == Config.CARD_PICK_COUNT
 	helpers.draw_panel(canvas, save_deck_rect, Color(0.18, 0.42, 0.62) if save_enabled else Color(0.13, 0.15, 0.18), 6.0, Color(0.48, 0.78, 0.96) if save_enabled else Color(0.26, 0.29, 0.33), 1.5)
 	helpers.draw_text_line(canvas, "保存牌组" if save_enabled else "%d/%d" % [draft_ids.size(), Config.CARD_PICK_COUNT], save_deck_rect, 16, Color(0.96, 0.97, 0.98) if save_enabled else Color(0.48, 0.52, 0.58), HORIZONTAL_ALIGNMENT_CENTER)
 
-	helpers.draw_text_line(canvas, "当前编辑", Rect2(margin, 92.0, view_size.x - margin * 2.0, 26.0), 18, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
-	var deck_area: Rect2 = Rect2(margin, 126.0, view_size.x - margin * 2.0, 220.0)
+	var selector_y: float = 88.0
+	deck_preset_prev_rect = Rect2(margin, selector_y, 44.0, 38.0)
+	deck_preset_next_rect = Rect2(margin + 50.0, selector_y, 44.0, 38.0)
+	add_deck_rect = Rect2(view_size.x - margin - 184.0, selector_y, 88.0, 38.0)
+	delete_deck_rect = Rect2(view_size.x - margin - 90.0, selector_y, 90.0, 38.0)
+	var can_switch: bool = deck_count > 1
+	helpers.draw_panel(canvas, deck_preset_prev_rect, Color(0.14, 0.18, 0.22) if can_switch else Color(0.09, 0.10, 0.12), 5.0, Color(0.34, 0.48, 0.60) if can_switch else Color(0.20, 0.22, 0.25), 1.0)
+	helpers.draw_panel(canvas, deck_preset_next_rect, Color(0.14, 0.18, 0.22) if can_switch else Color(0.09, 0.10, 0.12), 5.0, Color(0.34, 0.48, 0.60) if can_switch else Color(0.20, 0.22, 0.25), 1.0)
+	helpers.draw_text_line(canvas, "‹", deck_preset_prev_rect, 22, Color(0.86, 0.90, 0.94) if can_switch else Color(0.36, 0.39, 0.43), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "›", deck_preset_next_rect, 22, Color(0.86, 0.90, 0.94) if can_switch else Color(0.36, 0.39, 0.43), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_panel(canvas, add_deck_rect, Color(0.16, 0.36, 0.28) if can_add_deck else Color(0.09, 0.10, 0.12), 5.0, Color(0.36, 0.72, 0.54) if can_add_deck else Color(0.20, 0.22, 0.25), 1.0)
+	helpers.draw_text_line(canvas, "+ 新建", add_deck_rect, 13, Color(0.90, 0.96, 0.92) if can_add_deck else Color(0.36, 0.39, 0.43), HORIZONTAL_ALIGNMENT_CENTER)
+	var can_delete: bool = deck_count > 1
+	helpers.draw_panel(canvas, delete_deck_rect, Color(0.34, 0.17, 0.17) if can_delete else Color(0.09, 0.10, 0.12), 5.0, Color(0.72, 0.36, 0.34) if can_delete else Color(0.20, 0.22, 0.25), 1.0)
+	helpers.draw_text_line(canvas, "删除", delete_deck_rect, 13, Color(0.96, 0.88, 0.86) if can_delete else Color(0.36, 0.39, 0.43), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "%s  ·  %d/%d" % [active_deck_name, active_deck_index + 1, deck_count], Rect2(margin + 106.0, selector_y, view_size.x - margin * 2.0 - 302.0, 38.0), 15, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_CENTER)
+
+	helpers.draw_text_line(canvas, "当前编辑", Rect2(margin, 142.0, view_size.x - margin * 2.0, 26.0), 18, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
+	var deck_area: Rect2 = Rect2(margin, 176.0, view_size.x - margin * 2.0, 220.0)
 	_draw_editable_deck(canvas, draft_ids, deck_area)
 	var message: String = status_text if status_text != "" else "点击已选卡可移出牌组；未保存的改动不会用于对局。"
-	helpers.draw_text_line(canvas, message, Rect2(margin, 360.0, view_size.x - margin * 2.0, 22.0), 13, Color(0.72, 0.76, 0.82), HORIZONTAL_ALIGNMENT_CENTER)
-	helpers.draw_text_line(canvas, "单位仓库", Rect2(margin, 402.0, view_size.x - margin * 2.0, 28.0), 19, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
-	_draw_pagination(canvas, page, _page_count(cards), 398.0, margin)
-	_draw_repository(canvas, Rect2(margin, 440.0, view_size.x - margin * 2.0, view_size.y - 462.0), "", draft_ids, cards, page)
+	helpers.draw_text_line(canvas, message, Rect2(margin, 410.0, view_size.x - margin * 2.0, 22.0), 13, Color(0.72, 0.76, 0.82), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(canvas, "单位仓库", Rect2(margin, 452.0, view_size.x - margin * 2.0, 28.0), 19, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_LEFT)
+	_draw_pagination(canvas, page, _page_count(cards), 448.0, margin)
+	_draw_repository(canvas, Rect2(margin, 490.0, view_size.x - margin * 2.0, view_size.y - 512.0), "", draft_ids, cards, page)
 
 
 func _draw_frontend_header(canvas: CanvasItem, title: String, subtitle: String) -> void:

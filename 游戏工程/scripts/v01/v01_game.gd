@@ -17,6 +17,7 @@ const LockstepScheduler = preload("res://scripts/networking/lockstep_scheduler.g
 const Command = preload("res://scripts/networking/command.gd")
 const Fp = preload("res://scripts/support/fp_math.gd")
 const DesyncStats = preload("res://scripts/support/desync_stats.gd")
+const DeckLibrary = preload("res://scripts/support/deck_library.gd")
 const NetworkClient = preload("res://scripts/networking/network_client.gd")
 const DECK_SAVE_PATH: String = "user://selected_deck.json"
 const CARD_HOTKEYS: Array[Key] = [KEY_Q, KEY_W, KEY_E, KEY_A, KEY_S, KEY_D]
@@ -29,6 +30,7 @@ var cards: Array[Dictionary] = []
 var catalog_cards: Array[Dictionary] = []
 var selected_card_ids: Array[String] = []
 var saved_deck_ids: Array[String] = []
+var deck_library: RefCounted = null
 var selected_battle_card_id: String = ""
 var compendium_card_id: String = ""
 var compendium_page: int = 0
@@ -59,6 +61,7 @@ var peer_deck_ids: Array[String] = []
 var online_status_text: String = ""  # 房间界面顶部状态栏
 var join_input_text: String = ""     # 加入房间时的临时输入
 var disconnect_countdown: float = -1.0  # -1=未启动；>0=倒计时中（秒）
+var match_start_countdown: float = -1.0  # 双方准备后的服务端开局倒计时；0=等待 START 包
 
 # —— 断线重连：本机掉线后自动尝试重连（不立即结束对局）——
 var reconnecting_locally: bool = false
@@ -88,6 +91,8 @@ var room_ready_rect: Rect2 = Rect2()
 var room_leave_rect: Rect2 = Rect2()
 var join_submit_rect: Rect2 = Rect2()
 var room_setup_back_rect: Rect2 = Rect2()
+var online_deck_prev_rect: Rect2 = Rect2()
+var online_deck_next_rect: Rect2 = Rect2()
 
 
 func _ready() -> void:
@@ -117,30 +122,25 @@ func _ready() -> void:
 	queue_redraw()
 
 
-# 牌组存档只有一个“当前牌组”。读取时会过滤不存在/重复的卡牌；无有效存档则使用卡池前 6 张。
+# 读取多牌组存档；兼容旧 schema v1 的单牌组结构。
 func _load_saved_deck() -> void:
-	saved_deck_ids = _default_deck_ids()
+	var known_ids: Array[String] = []
+	for card in cards:
+		known_ids.append(String(card.get("id", "")))
+	deck_library = DeckLibrary.new()
+	deck_library.setup(known_ids, _default_deck_ids())
 	if not FileAccess.file_exists(DECK_SAVE_PATH):
+		_sync_active_deck()
 		return
 	var raw: String = FileAccess.get_file_as_string(DECK_SAVE_PATH)
 	var parsed: Variant = JSON.parse_string(raw)
-	if not (parsed is Dictionary):
-		frontend_status_text = "牌组存档无法读取，已使用默认牌组。"
-		return
-	var candidate: Array[String] = []
-	var seen: Dictionary = {}
-	var known: Dictionary = {}
-	for card in cards:
-		known[String(card.get("id", ""))] = true
-	for raw_id in parsed.get("selected_card_ids", []):
-		var card_id: String = String(raw_id)
-		if known.has(card_id) and not seen.has(card_id):
-			candidate.append(card_id)
-			seen[card_id] = true
-	if candidate.size() == Config.CARD_PICK_COUNT:
-		saved_deck_ids = candidate
-	else:
-		frontend_status_text = "牌组存档不完整，已使用默认牌组。"
+	frontend_status_text = deck_library.load_payload(parsed)
+	_sync_active_deck()
+	# 旧单牌组存档在成功读取后立即落为 schema v2，后续可直接新增预设。
+	if deck_library.migrated_from_schema > 0:
+		var migration_notice: String = frontend_status_text
+		if _persist_deck_library():
+			frontend_status_text = migration_notice
 
 
 func _default_deck_ids() -> Array[String]:
@@ -154,18 +154,88 @@ func _save_current_deck() -> bool:
 	if selected_card_ids.size() != Config.CARD_PICK_COUNT:
 		frontend_status_text = "需要恰好选择 %d 张卡才能保存。" % Config.CARD_PICK_COUNT
 		return false
+	var backup: Dictionary = deck_library.to_payload() if deck_library != null else {}
+	if deck_library == null or not deck_library.save_active(selected_card_ids):
+		frontend_status_text = "当前牌组包含无效或重复卡牌，无法保存。"
+		return false
+	if not _persist_deck_library():
+		deck_library.load_payload(backup)
+		return false
+	_sync_active_deck(false)
+	frontend_status_text = "%s 已保存，单机与联机将使用这 6 张卡。" % deck_library.active_deck_name()
+	return true
+
+
+func _persist_deck_library() -> bool:
 	var file: FileAccess = FileAccess.open(DECK_SAVE_PATH, FileAccess.WRITE)
 	if file == null:
 		frontend_status_text = "保存牌组失败（错误码 %d）。" % FileAccess.get_open_error()
 		return false
-	saved_deck_ids = selected_card_ids.duplicate()
-	file.store_string(JSON.stringify({
-		"schema_version": 1,
-		"selected_card_ids": saved_deck_ids
-	}, "\t"))
+	file.store_string(JSON.stringify(deck_library.to_payload(), "\t"))
 	file.close()
-	frontend_status_text = "牌组已保存，单机与联机将使用这 6 张卡。"
 	return true
+
+
+func _sync_active_deck(sync_draft: bool = true) -> void:
+	if deck_library == null:
+		saved_deck_ids = _default_deck_ids()
+	else:
+		saved_deck_ids = deck_library.active_deck_ids()
+	if sync_draft:
+		selected_card_ids = saved_deck_ids.duplicate()
+
+
+func _switch_active_deck(offset: int, source: String = "") -> void:
+	if deck_library == null or not deck_library.switch_relative(offset):
+		return
+	_sync_active_deck()
+	if not _persist_deck_library():
+		deck_library.switch_relative(-offset)
+		_sync_active_deck()
+		if source == "online":
+			online_status_text = "切换牌组失败：无法保存当前预设。"
+		queue_redraw()
+		return
+	frontend_status_text = "已切换到 %s。" % deck_library.active_deck_name()
+	if source == "online":
+		online_status_text = "已切换到 %s；准备时会发送这套牌组。" % deck_library.active_deck_name()
+	queue_redraw()
+
+
+func _create_deck_preset() -> void:
+	if deck_library == null:
+		return
+	var backup: Dictionary = deck_library.to_payload()
+	if not deck_library.create_deck(selected_card_ids):
+		frontend_status_text = "最多保存 %d 套牌组。" % DeckLibrary.MAX_DECKS
+		queue_redraw()
+		return
+	_sync_active_deck()
+	if not _persist_deck_library():
+		deck_library.load_payload(backup)
+		_sync_active_deck()
+		queue_redraw()
+		return
+	frontend_status_text = "已新建 %s（复制上一套牌组），可直接调整后保存。" % deck_library.active_deck_name()
+	queue_redraw()
+
+
+func _delete_active_deck() -> void:
+	if deck_library == null:
+		return
+	var backup: Dictionary = deck_library.to_payload()
+	if not deck_library.delete_active():
+		frontend_status_text = "至少需要保留一套牌组。"
+		queue_redraw()
+		return
+	_sync_active_deck()
+	if not _persist_deck_library():
+		deck_library.load_payload(backup)
+		_sync_active_deck()
+		queue_redraw()
+		return
+	frontend_status_text = "已删除该预设，当前切换为 %s。" % deck_library.active_deck_name()
+	queue_redraw()
 
 
 # —— 网络初始化：挂信号 + 用 self（Control Node）做轮询宿主
@@ -182,6 +252,7 @@ func _init_networking() -> void:
 	net.room_joined.connect(_on_room_joined)
 	net.peer_joined.connect(_on_peer_joined)
 	net.peer_ready_changed.connect(_on_peer_ready_changed)
+	net.start_countdown_received.connect(_on_start_countdown)
 	net.peer_disconnected.connect(_on_peer_disconnect)
 	net.opponent_win_by_disconnect.connect(_on_opponent_win_by_dc)
 	net.start_match_received.connect(_on_start_match)
@@ -233,6 +304,10 @@ func _process(delta: float) -> void:
 	if disconnect_countdown > 0.0:
 		_tick_disconnect_countdown(delta)
 		queue_redraw()  # Issue3: 确保倒计时在RESULT界面也能每帧刷新
+	# 开局倒计时只负责本地显示；真正开始仍以服务器 START 包为准。
+	if match_start_countdown > 0.0:
+		match_start_countdown = maxf(0.0, match_start_countdown - delta)
+		queue_redraw()
 
 	# Issue5: 战斗恢复倒计时（暂停期间不推进 accumulate，不攒 tick 债）
 	var resume_now: bool = false
@@ -543,13 +618,20 @@ func _recompute_online_rects() -> void:
 	join_submit_rect = Rect2(Vector2(w * 0.5 - box_w * 0.5, h * 0.5 - 18.0), Vector2(box_w, 48.0))
 	online_create_rect = Rect2(Vector2(w * 0.5 - box_w * 0.5, h * 0.5 + 92.0), Vector2(box_w, 52.0))
 	room_setup_back_rect = Rect2(Vector2(22.0, 22.0), Vector2(112.0, 44.0))
-	# 房间等待界面：准备/离开
-	room_ready_rect = Rect2(Vector2(w * 0.5 - 220.0, h * 0.5 + 60.0), Vector2(200.0, 48.0))
-	room_leave_rect = Rect2(Vector2(w * 0.5 + 20.0, h * 0.5 + 60.0), Vector2(200.0, 48.0))
+	# 房间等待界面：准备/离开；上方左右箭头可快速切换当前牌组。
+	room_ready_rect = Rect2(Vector2(w * 0.5 - 220.0, h * 0.5 + 100.0), Vector2(200.0, 48.0))
+	room_leave_rect = Rect2(Vector2(w * 0.5 + 20.0, h * 0.5 + 100.0), Vector2(200.0, 48.0))
+	var deck_arrow_y: float = h * 0.5 - 442.0 if screen_mode == ScreenMode.ROOM_SETUP else h * 0.5 - 358.0
+	online_deck_prev_rect = Rect2(Vector2(w * 0.5 - 150.0, deck_arrow_y), Vector2(42.0, 32.0))
+	online_deck_next_rect = Rect2(Vector2(w * 0.5 + 108.0, deck_arrow_y), Vector2(42.0, 32.0))
 
 
 func _handle_room_setup_press(pos: Vector2) -> void:
-	if online_create_rect.has_point(pos):
+	if online_deck_prev_rect.has_point(pos):
+		_switch_active_deck(-1, "online")
+	elif online_deck_next_rect.has_point(pos):
+		_switch_active_deck(1, "online")
+	elif online_create_rect.has_point(pos):
 		_try_create_room()
 	elif join_submit_rect.has_point(pos):
 		# 提交加入请求
@@ -564,14 +646,24 @@ func _handle_room_setup_press(pos: Vector2) -> void:
 
 
 func _handle_room_wait_press(pos: Vector2) -> void:
-	if room_ready_rect.has_point(pos):
+	if online_deck_prev_rect.has_point(pos) or online_deck_next_rect.has_point(pos):
+		if my_ready or match_start_countdown >= 0.0:
+			online_status_text = "请先取消准备，再切换牌组。"
+			queue_redraw()
+			return
+		_switch_active_deck(-1 if online_deck_prev_rect.has_point(pos) else 1, "online")
+	elif room_ready_rect.has_point(pos):
 		_toggle_ready()
 	elif room_leave_rect.has_point(pos):
 		_leave_room()
 
 
 func _handle_main_menu_press(position: Vector2) -> void:
-	if painter.main_menu_rects.get("single", Rect2()).has_point(position):
+	if painter.main_deck_prev_rect.has_point(position):
+		_switch_active_deck(-1)
+	elif painter.main_deck_next_rect.has_point(position):
+		_switch_active_deck(1)
+	elif painter.main_menu_rects.get("single", Rect2()).has_point(position):
 		selected_card_ids = saved_deck_ids.duplicate()
 		online_mode = false
 		_start_battle()
@@ -620,6 +712,18 @@ func _handle_deck_builder_press(position: Vector2) -> void:
 		screen_mode = ScreenMode.MAIN_MENU
 		frontend_status_text = ""
 		queue_redraw()
+		return
+	if painter.deck_preset_prev_rect.has_point(position):
+		_switch_active_deck(-1)
+		return
+	if painter.deck_preset_next_rect.has_point(position):
+		_switch_active_deck(1)
+		return
+	if painter.add_deck_rect.has_point(position):
+		_create_deck_preset()
+		return
+	if painter.delete_deck_rect.has_point(position):
+		_delete_active_deck()
 		return
 	var page_count: int = max(1, int(ceil(float(cards.size()) / float(REPOSITORY_PAGE_SIZE))))
 	if painter.page_prev_rect.has_point(position) and deck_builder_page > 0:
@@ -745,11 +849,11 @@ func _draw() -> void:
 	painter.selected_battle_card_id = selected_battle_card_id
 	painter.draw_background(self)
 	if screen_mode == ScreenMode.MAIN_MENU:
-		painter.draw_main_menu(self, saved_deck_ids, frontend_status_text)
+		painter.draw_main_menu(self, saved_deck_ids, frontend_status_text, deck_library.active_deck_name(), deck_library.active_index, deck_library.deck_count())
 	elif screen_mode == ScreenMode.COMPENDIUM:
 		painter.draw_compendium(self, compendium_card_id, compendium_page)
 	elif screen_mode == ScreenMode.DECK_BUILDER:
-		painter.draw_deck_builder(self, selected_card_ids, frontend_status_text, deck_builder_page)
+		painter.draw_deck_builder(self, selected_card_ids, frontend_status_text, deck_builder_page, deck_library.active_deck_name(), deck_library.active_index, deck_library.deck_count(), deck_library.deck_count() < DeckLibrary.MAX_DECKS)
 	elif screen_mode == ScreenMode.ROOM_SETUP:
 		_draw_room_setup()
 		_draw_status_banner()
@@ -831,10 +935,10 @@ func _draw_restart_countdown() -> void:
 func _draw_room_setup() -> void:
 	var w: float = size.x
 	var h: float = size.y
-	var title: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 250.0), Vector2(w - 80.0, 42.0))
+	var title: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 510.0), Vector2(w - 80.0, 42.0))
 	helpers.draw_text_line(self, "联机对战", title, 30, Color(0.94, 0.86, 0.60), HORIZONTAL_ALIGNMENT_CENTER)
-	var deck_hint: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 202.0), Vector2(w - 80.0, 22.0))
-	helpers.draw_text_line(self, "使用当前已保存牌组（%d/%d）" % [saved_deck_ids.size(), Config.CARD_PICK_COUNT], deck_hint, 14, Color(0.70, 0.77, 0.84), HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_online_deck_selector(h * 0.5 - 442.0)
+	painter.draw_deck_preview(self, selected_card_ids, Rect2(Vector2(40.0, h * 0.5 - 398.0), Vector2(w - 80.0, 220.0)))
 	var hint: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 126.0), Vector2(w - 80.0, 20.0))
 	helpers.draw_text_line(self, "输入房间码加入（字母+数字，不含 0/O/1/I）", hint, 13, Color(0.78, 0.74, 0.66), HORIZONTAL_ALIGNMENT_CENTER)
 	helpers.draw_panel(self, join_input_rect, Color(0.06, 0.08, 0.12, 0.96), 6.0, Color(0.70, 0.80, 0.96), 1.5)
@@ -858,19 +962,38 @@ func _draw_room_setup() -> void:
 func _draw_room_wait() -> void:
 	var w: float = size.x
 	var h: float = size.y
-	var title: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 180.0), Vector2(w - 80.0, 40.0))
+	var title: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 450.0), Vector2(w - 80.0, 40.0))
 	helpers.draw_text_line(self, "房间：%s" % room_code, title, 32, Color(0.96, 0.86, 0.42), HORIZONTAL_ALIGNMENT_CENTER)
-	var side_hint: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 130.0), Vector2(w - 80.0, 22.0))
+	var side_hint: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 402.0), Vector2(w - 80.0, 22.0))
 	helpers.draw_text_line(self, "我：%s（卡组 %d/%d 已选）" % [my_side.to_upper(), selected_card_ids.size(), Config.CARD_PICK_COUNT], side_hint, 16, Color(0.88, 0.82, 0.74), HORIZONTAL_ALIGNMENT_CENTER)
-	var status: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 80.0), Vector2(w - 80.0, 26.0))
+	_draw_online_deck_selector(h * 0.5 - 358.0)
+	painter.draw_deck_preview(self, selected_card_ids, Rect2(Vector2(40.0, h * 0.5 - 314.0), Vector2(w - 80.0, 220.0)))
+	var status: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 70.0), Vector2(w - 80.0, 26.0))
 	var me_s: String = "✅ 我已准备" if my_ready else "⏸ 我未准备"
 	var peer_s: String = "✅ 对方已准备" if peer_ready else "⏸ 对方未准备"
 	helpers.draw_text_line(self, "%s        |        %s" % [me_s, peer_s], status, 15, Color(0.78, 0.92, 0.78) if (my_ready and peer_ready) else Color(0.92, 0.80, 0.62), HORIZONTAL_ALIGNMENT_CENTER)
-	var tip: Rect2 = Rect2(Vector2(40.0, h * 0.5 + 10.0), Vector2(w - 80.0, 20.0))
-	helpers.draw_text_line(self, "双方都点「准备」后服务器自动开始（共享随机种子+牌组）", tip, 12, Color(0.66, 0.72, 0.80), HORIZONTAL_ALIGNMENT_CENTER)
+	var tip: Rect2 = Rect2(Vector2(40.0, h * 0.5 - 24.0), Vector2(w - 80.0, 26.0))
+	var tip_text: String = "双方准备后倒计时 3 秒，再开始对局"
+	var tip_color: Color = Color(0.66, 0.72, 0.80)
+	if match_start_countdown >= 0.0:
+		tip_text = "对局将在 %d 秒后开始" % maxi(1, int(ceilf(match_start_countdown))) if match_start_countdown > 0.0 else "正在开始对局…"
+		tip_color = Color(0.96, 0.86, 0.42)
+	helpers.draw_text_line(self, tip_text, tip, 17 if match_start_countdown >= 0.0 else 12, tip_color, HORIZONTAL_ALIGNMENT_CENTER)
 	var ready_bg: Color = Color(0.30, 0.72, 0.52) if not my_ready else Color(0.30, 0.55, 0.92)
 	_draw_button(room_ready_rect, "准备 / 取消" + (" ✓" if my_ready else ""), true, ready_bg, Color(0.20, 0.34, 0.28))
 	_draw_button(room_leave_rect, "离开房间", true, Color(0.78, 0.40, 0.30), Color(0.30, 0.20, 0.20))
+
+
+func _draw_online_deck_selector(y: float) -> void:
+	var can_switch: bool = deck_library != null and deck_library.deck_count() > 1
+	var active_name: String = deck_library.active_deck_name() if deck_library != null else "牌组 1"
+	var active_pos: int = deck_library.active_index + 1 if deck_library != null else 1
+	var total: int = deck_library.deck_count() if deck_library != null else 1
+	helpers.draw_panel(self, online_deck_prev_rect, Color(0.14, 0.18, 0.22) if can_switch else Color(0.09, 0.10, 0.12), 5.0, Color(0.34, 0.48, 0.60) if can_switch else Color(0.20, 0.22, 0.25), 1.0)
+	helpers.draw_panel(self, online_deck_next_rect, Color(0.14, 0.18, 0.22) if can_switch else Color(0.09, 0.10, 0.12), 5.0, Color(0.34, 0.48, 0.60) if can_switch else Color(0.20, 0.22, 0.25), 1.0)
+	helpers.draw_text_line(self, "‹", online_deck_prev_rect, 22, Color(0.86, 0.90, 0.94) if can_switch else Color(0.36, 0.39, 0.43), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(self, "›", online_deck_next_rect, 22, Color(0.86, 0.90, 0.94) if can_switch else Color(0.36, 0.39, 0.43), HORIZONTAL_ALIGNMENT_CENTER)
+	helpers.draw_text_line(self, "%s  ·  %d/%d" % [active_name, active_pos, total], Rect2(Vector2(size.x * 0.5 - 104.0, y), Vector2(208.0, 32.0)), 15, Color(0.86, 0.90, 0.95), HORIZONTAL_ALIGNMENT_CENTER)
 
 
 # 网络状态小 HUD：显示当前 tick / 等待原因 / desync 信息
@@ -955,6 +1078,7 @@ func _on_conn_fail(reason: String) -> void:
 
 
 func _on_disconnected() -> void:
+	match_start_countdown = -1.0
 	# 已处于重连流程时再次断开：不结束对局，安排下一次重试
 	if reconnecting_locally:
 		reconnect_connecting = false
@@ -981,6 +1105,7 @@ func _on_room_created(code: String, side: String) -> void:
 	my_side = side
 	my_ready = false
 	peer_ready = false
+	match_start_countdown = -1.0
 	_online_setup_sides()
 	online_status_text = "房间已创建：%s（我是%s，等待玩家加入…）" % [code, side]
 	screen_mode = ScreenMode.ROOM_WAIT
@@ -1003,6 +1128,7 @@ func _on_room_joined(code: String, side: String) -> void:
 	my_side = side
 	my_ready = false
 	peer_ready = false
+	match_start_countdown = -1.0
 	_online_setup_sides()
 	online_status_text = "已加入房间：%s（我是%s，双方点准备开始）" % [code, side]
 	screen_mode = ScreenMode.ROOM_WAIT
@@ -1012,6 +1138,7 @@ func _on_room_joined(code: String, side: String) -> void:
 func _on_peer_joined() -> void:
 	online_status_text = "对方已加入房间：%s（双方点准备开始）" % room_code
 	peer_ready = false
+	match_start_countdown = -1.0
 	# Issue4: 对方重连时取消断线倒计时
 	disconnect_countdown = -1.0
 	scheduler.paused = false
@@ -1020,13 +1147,26 @@ func _on_peer_joined() -> void:
 
 func _on_peer_ready_changed(ready_flag: bool, _peer_side: String) -> void:
 	peer_ready = ready_flag
+	if not ready_flag:
+		match_start_countdown = -1.0
 	var me_txt: String = "已准备" if my_ready else "未准备"
 	var peer_txt: String = "已准备" if peer_ready else "未准备"
 	online_status_text = "房间 %s（我：%s，对方：%s）" % [room_code, me_txt, peer_txt]
 	queue_redraw()
 
 
+func _on_start_countdown(seconds: float) -> void:
+	if seconds <= 0.0:
+		match_start_countdown = -1.0
+		online_status_text = "开局倒计时已取消，等待双方重新准备。"
+	else:
+		match_start_countdown = seconds
+		online_status_text = "双方已准备，对局将在 %d 秒后开始。" % int(ceilf(seconds))
+	queue_redraw()
+
+
 func _on_peer_disconnect(grace_seconds: float) -> void:
+	match_start_countdown = -1.0
 	online_status_text = "对方连接中断，等待%d秒重连…" % int(grace_seconds)
 	disconnect_countdown = grace_seconds
 	scheduler.paused = true
@@ -1055,6 +1195,7 @@ func _on_opponent_win_by_dc(winner_side: String, _rc: String) -> void:
 
 func _on_start_match(seed: int, _side_role: String, my_deck: Array[String], peer_deck: Array[String]) -> void:
 	# 服务器：双方都准备好了，下发共享种子 + 双方牌组
+	match_start_countdown = -1.0
 	peer_deck_ids = peer_deck.duplicate()
 	online_mode = true
 	scheduler.strict_wait = true
@@ -1126,6 +1267,7 @@ func _on_peer_rematch() -> void:
 # Issue2: 对方主动退出了房间
 func _on_peer_left(who: String) -> void:
 	peer_left_reason = who
+	match_start_countdown = -1.0
 	disconnect_countdown = -1.0
 	scheduler.paused = false
 	if who == "host":
@@ -1139,6 +1281,7 @@ func _on_peer_left(who: String) -> void:
 # 主机端（非重连方）：无 commands 数据，只需恢复倒计时
 # 客机端（重连方）：有 commands 数据，需要回放所有命令恢复战场；V0.45 不再填充 NO_OP 窗口。
 func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_deck: Array[String], peer_deck: Array[String]) -> void:
+	var preferred_card_id: String = selected_battle_card_id
 	# 重连成功：清除本机重连状态；对端恢复信号也会走到这里
 	reconnecting_locally = false
 	reconnect_connecting = false
@@ -1183,14 +1326,12 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 				_replay_commands(commands, 0, scheduler.current_tick)
 		else:
 			# 本机状态不可用：回退到从第 1 tick 全量回放（旧逻辑）
-			_start_online_battle(my_deck, peer_deck)
+			_start_online_battle(my_deck, peer_deck, preferred_card_id)
 			if commands.size() > 0:
 				_replay_commands(commands)
 		# 同步本机 UI 阵营/卡组（与 _start_online_battle 尾部保持一致）
 		painter.controlled_side = my_game_side
-		selected_card_ids = my_deck.duplicate()
-		selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""
-		painter.info_card_id = selected_battle_card_id
+		_apply_battle_deck_selection(my_deck, preferred_card_id)
 		# V0.45：缺省即 NO_OP，重连后不再填充 NO_OP 窗口。
 		# 立即恢复战斗，不再 3 秒倒计时
 		battle_restart_countdown = -1.0
@@ -1203,6 +1344,7 @@ func _on_resume_battle(commands: Array, seed_val: int, side_role: String, my_dec
 
 # —— desync 自动重同步：服务器返回命令日志后，双方重置并按同一 tick 回放恢复 ——
 func _on_resync_data(commands: Array, target_tick: int, base_tick: int, seed_val: int, side_role: String, my_deck: Array[String], peer_deck: Array[String]) -> void:
+	var preferred_card_id: String = selected_battle_card_id
 	desync_recovering = false
 	desync_recovery_timer = -1.0
 	disconnect_countdown = -1.0
@@ -1218,7 +1360,7 @@ func _on_resync_data(commands: Array, target_tick: int, base_tick: int, seed_val
 	simulator.set_shared_seed(seed_val)
 	# 必须在 _start_online_battle（会 reset scheduler）之前取检查点，否则检查点会被清空。
 	var snap: Variant = scheduler.get_recovery_snapshot(base_tick) if base_tick >= 0 else null
-	_start_online_battle(my_deck, peer_deck)
+	_start_online_battle(my_deck, peer_deck, preferred_card_id)
 	# 优先从双方共有的检查点恢复，只重放检查点之后的尾部命令，避免整局全量重放。
 	var recovered_from_snapshot: bool = false
 	if snap != null:
@@ -1300,6 +1442,7 @@ func _back_to_room_wait() -> void:
 	peer_rematch_requested = false
 	peer_ready = false
 	my_ready = false
+	match_start_countdown = -1.0
 	disconnect_countdown = -1.0
 	battle_restart_countdown = -1.0
 	reconnecting_locally = false
@@ -1400,6 +1543,8 @@ func _toggle_ready() -> void:
 	if net == null or not net.is_tcp_connected():
 		return
 	my_ready = not my_ready
+	if not my_ready:
+		match_start_countdown = -1.0
 	net.send_ready(my_ready, selected_card_ids)
 	online_status_text = "已发送准备：%s（我方：%s，对方：%s）" % [room_code, "已准备" if my_ready else "未准备", "已准备" if peer_ready else "未准备"]
 	queue_redraw()
@@ -1433,6 +1578,7 @@ func _request_online_rematch() -> void:
 	# 重置准备状态
 	my_ready = false
 	peer_ready = false
+	match_start_countdown = -1.0
 	# 使用已保存的当前牌组
 	selected_card_ids = saved_deck_ids.duplicate()
 	# Issue1: 发送 REMATCH 通知对端（而非 READY），服务器会广播 PEER_REMATCH
@@ -1452,6 +1598,7 @@ func _leave_room() -> void:
 	room_code = ""
 	my_ready = false
 	peer_ready = false
+	match_start_countdown = -1.0
 	peer_deck_ids.clear()
 	online_mode = false
 	scheduler.strict_wait = false
@@ -1479,7 +1626,7 @@ func _leave_room() -> void:
 
 
 # —— 启动联机对局（start_match_received 之后）——
-func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> void:
+func _start_online_battle(my_deck: Array[String], peer_deck: Array[String], preferred_card_id: String = "") -> void:
 	# 联机时 host=PLAYER 阵营、guest=BOT 阵营
 	var player_ids: Array[String]
 	var bot_ids: Array[String]
@@ -1505,7 +1652,7 @@ func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> v
 	# 联机模式 bot_brain 不参与思考，但重置状态以防上一局残留影响
 	bot_brain.reset()
 	# 同步我的卡组到卡牌栏（host端=player端卡组，guest端=bot端卡组=my_deck）
-	selected_card_ids = my_deck.duplicate()
+	_apply_battle_deck_selection(my_deck, preferred_card_id)
 	# 通知绘制层本机操控的阵营（影响法力条、任务进度、进化高亮等8处显示判断）
 	painter.controlled_side = my_game_side
 	# V0.45：不再预发/发送 NO_OP；开局仅清空命令发送历史并保存 tick 0 快照。
@@ -1513,13 +1660,16 @@ func _start_online_battle(my_deck: Array[String], peer_deck: Array[String]) -> v
 		if net != null:
 			net.reset_send_history()
 		scheduler.save_state_snapshot(0, simulator.snapshot(), task_system.snapshot())
-	# 选第一张卡做默认选中；注意用 selected_card_ids（我的卡组），不要用 player_ids（guest端是对手卡组）
-	selected_battle_card_id = selected_card_ids[0] if selected_card_ids.size() > 0 else ""
-	painter.info_card_id = selected_battle_card_id
 	last_issued_checksum_tick = -1
 	screen_mode = ScreenMode.BATTLE
 	online_status_text = ""
 	queue_redraw()
+
+
+func _apply_battle_deck_selection(my_deck: Array[String], preferred_card_id: String = "") -> void:
+	selected_card_ids = my_deck.duplicate()
+	selected_battle_card_id = DeckLibrary.resolve_preferred_card(selected_card_ids, preferred_card_id)
+	painter.info_card_id = selected_battle_card_id
 
 
 # —— 联机：玩家发出的本地命令同时发给服务器 ——

@@ -27,6 +27,7 @@ signal room_created(room_code: String, my_side: String)
 signal room_joined(room_code: String, my_side: String)
 signal peer_joined()
 signal peer_ready_changed(ready: bool, peer_side: String)
+signal start_countdown_received(seconds: float)
 signal peer_disconnected(grace_seconds: float)
 signal opponent_win_by_disconnect(winner: String, room_code: String)
 signal start_match_received(seed: int, my_side: String, my_deck: Array[String], peer_deck: Array[String])
@@ -274,6 +275,8 @@ func _handle_json(msg: Dictionary) -> void:
 			emit_signal("peer_joined")
 		"PEER_READY":
 			emit_signal("peer_ready_changed", bool(msg.get("ready", false)), String(msg.get("side", "guest")))
+		"START_COUNTDOWN":
+			emit_signal("start_countdown_received", float(msg.get("seconds", 0.0)))
 		"PEER_DISCONNECT":
 			emit_signal("peer_disconnected", float(msg.get("grace_seconds", 30.0)))
 		"OPPONENT_DISCONNECTED_WIN":
