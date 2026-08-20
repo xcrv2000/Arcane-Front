@@ -1,11 +1,11 @@
-# 服务端部署工具本地配置（含服务器地址、密钥路径），不提交仓库
+# 服务端部署工具本地配置（含服务器地址、密钥路径），不提交仓库
 tools/deploy_relay/deploy.config.json
-tools/deploy_relay/deploy_enet.config.json
-
-# 本地测试用 Godot（headless 验证入口），体积大且仅本机使用，不提交仓库
-tools/godot/
-
-# V0.45 ENet 服务器本地构建产物/运行数据
-/tools/relay_server_enet/relay_server_enet
-/tools/relay_server_enet/relay_server_enet.exe
-/tools/relay_server_enet/match_results.jsonl
+tools/deploy_relay/deploy_enet.config.json
+
+# 本地测试用 Godot（headless 验证入口），体积大且仅本机使用，不提交仓库
+tools/godot/
+
+# V0.45 ENet 服务器本地构建产物/运行数据
+/tools/relay_server_enet/relay_server_enet
+/tools/relay_server_enet/relay_server_enet.exe
+/tools/relay_server_enet/match_results.jsonl
